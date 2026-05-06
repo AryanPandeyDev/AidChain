@@ -121,14 +121,75 @@
                                     5. Upload docs to S3/GCS         ──► Store files
                                        Get signed URLs
                                     6. Create NGOApplication          ──► INSERT ngo_applications
-                                       status=PENDING_REVIEW
-                                    7. Return application object
+                                       status=AI_SCREENING
+                                    7. Trigger AI pre-screening (async)
+                                    8. Return application object
                         ◄──────────────────────────
-8. UI shows "Application Under Review"
+9. UI shows "Application Under Review"
    with status badge
 ```
 
-### 2.2 NGO Checks Application Status
+### 2.2 AI Pre-Screening (Async)
+
+Before any application reaches the admin, an AI layer screens it. This runs as a background job triggered after submission.
+
+```
+[Backend - AI Service]                                                [DB]
+──────────────────────────────────────────────────────────────────────────
+
+Input: NGOApplication (org name, country, registration number,
+       website, uploaded documents)
+
+STEP 1 — RESEARCH & ANALYSIS
+─────────────────────────────
+1. AI performs automated research on the NGO:
+   - Cross-reference org name + registration number
+     against public registries (if available)
+   - Check website (if provided): is it real,
+     does it mention the org, how old is the domain?
+   - Analyze uploaded documents:
+     does registration cert look legitimate?
+     does tax ID format match the country?
+   - Look for red flags: newly created entities,
+     mismatched country/registration data,
+     suspicious document patterns
+
+STEP 2 — GENERATE VERDICT
+─────────────────────────
+2. AI produces:
+   - aiConfidenceScore: 0.0 – 1.0
+     (how confident AI is that this is a legitimate NGO)
+   - aiSummary: text paragraph summarizing findings
+     (e.g., "Organization registered in India since 2018.
+      Website active with matching details. Tax ID format
+      is valid for Indian NGOs. No red flags found.")
+   - aiVerdict: PASS or FAIL
+
+STEP 3 — ROUTE APPLICATION
+──────────────────────────
+3a. If aiVerdict == FAIL (obvious fake):
+    - Update application                     ──► UPDATE ngo_applications
+      status = AI_REJECTED                       SET status='AI_REJECTED'
+      ai_confidence_score = score
+      ai_summary = summary
+    - NGO is notified: "Application could not be
+      verified. Please ensure your documents are
+      valid and reapply."
+    - Admin can still see AI_REJECTED applications
+      in a separate tab (for oversight)
+
+3b. If aiVerdict == PASS (looks legitimate):
+    - Update application                     ──► UPDATE ngo_applications
+      status = PENDING_REVIEW                    SET status='PENDING_REVIEW'
+      ai_confidence_score = score
+      ai_summary = summary
+    - Application is now visible to admin
+      with AI insights attached
+```
+
+> **Implementation Note:** The AI service is a placeholder for now. The interface is defined (input: application data → output: score + summary + verdict) but the internal logic (which LLM, which APIs, which document analysis tools) is TBD. Design the backend with a clean `AIScreeningService` interface so the implementation can be swapped later.
+
+### 2.3 NGO Checks Application Status
 
 ```
 [Frontend]                          [Backend]                         [DB]
@@ -140,18 +201,22 @@
                                     3. Return status + rejectionReason
                         ◄──────────────────────────
 4. UI renders based on status:
-   - PENDING_REVIEW → "Under Review" screen
+   - AI_SCREENING → "Application Under Review" screen
+   - PENDING_REVIEW → "Application Under Review" screen
+     (NGO does not know about the AI step — same UI)
    - VERIFIED → Redirect to NGO dashboard
    - REJECTED → Show reason + "Reapply" button
+   - AI_REJECTED → Show generic message + "Reapply" button
+     (don't reveal AI scoring details to the NGO)
 ```
 
-### 2.3 NGO Reapplication (After Rejection)
+### 2.4 NGO Reapplication (After Rejection)
 
 ```
 Same as 2.1 but:
-- Backend checks existing application status = REJECTED
+- Backend checks existing application status = REJECTED or AI_REJECTED
 - Creates new NGOApplication record (old one preserved for audit)
-- OR updates existing record, resets status to PENDING_REVIEW
+- OR updates existing record, resets status to AI_SCREENING
 ```
 
 ---
@@ -160,24 +225,37 @@ Same as 2.1 but:
 
 ### 3.1 Admin Reviews NGO Applications
 
+Admin only sees applications that have **passed AI screening** (status = PENDING_REVIEW). AI_REJECTED applications are in a separate tab for oversight.
+
 ```
 [Frontend - Admin Panel]            [Backend]                         [DB]
 ───────────────────────────────────────────────────────────────────────────
 1. Admin opens "NGO Applications" tab
                         ──GET /api/admin/ngo/applications──►
-                                    2. Fetch all applications         ◄── SELECT ngo_applications
-                                       with status filter (optional)
+                        ?status=PENDING_REVIEW (default)
+                                    2. Fetch applications              ◄── SELECT ngo_applications
+                                       with status filter
                                     3. Return list
                         ◄──────────────────────────
 4. Admin sees table: org name, country,
-   status, submitted date
+   AI confidence score, submitted date
 
 5. Admin clicks an application
                         ──GET /api/admin/ngo/applications/{id}──►
-                                    6. Return full details + doc URLs ◄── SELECT ...
+                                    6. Return full details + doc URLs  ◄── SELECT ...
                         ◄──────────────────────────
-7. Admin views uploaded documents
-   (opens signed URLs in browser)
+7. Admin sees:
+   ┌─────────────────────────────────────────────┐
+   │  🤖 AI Screening Results                    │
+   │  Confidence: 0.87 / 1.0                     │
+   │  Summary: "Organization registered in        │
+   │  India since 2018. Website active with       │
+   │  matching details. Tax ID format valid       │
+   │  for Indian NGOs. No red flags found."       │
+   └─────────────────────────────────────────────┘
+   - Uploaded documents (signed URLs)
+   - Org details (name, country, reg number, website)
+   - [Approve] [Reject] buttons
 ```
 
 ### 3.2 Admin Approves NGO
@@ -259,29 +337,65 @@ Same as 2.1 but:
 
 > **Key:** Name, description, region — stored ONLY in the backend DB. The smart contract stores nothing except caps and addresses.
 
-### 3.5 Admin Assigns NGO to Pool
+### 3.5 Admin Reviews Pool Assignment Requests
+
+NGOs submit requests to be assigned to pools (see Flow 5.5). Admin reviews them here.
+
+```
+[Frontend - Admin Panel]  [Backend]                                  [DB]
+─────────────────────────────────────────────────────────────────────────
+1. Admin opens pool detail page
+2. Sees "Pending Assignment Requests" section
+                ──GET /api/admin/pools/{poolId}/assignment-requests──►
+                                    3. Fetch requests for this pool   ◄── SELECT pool_assignment_requests
+                                       with NGO details, trust scores     JOIN users
+                                    4. Return list
+                ◄──────────────────────────
+5. Admin clicks a request to view details:
+   - NGO org name, country, trust score
+   - Justification text
+   - Supporting document (signed URL)
+   - Date submitted
+```
+
+#### 3.5a Admin Approves Assignment Request
 
 ```
 [Frontend - Admin Panel]  [Backend]                    [Blockchain]           [DB]
 ─────────────────────────────────────────────────────────────────────────────────
-1. Admin opens pool detail page
-2. Clicks "Assign NGO"
-3. Selects from dropdown of VERIFIED NGOs
-
-                ──POST /api/admin/pools/{poolId}/assign-ngo──►
-                {ngoUserId: "..."}
-                          4. Validate pool exists & is ACTIVE
-                          5. Validate NGO is VERIFIED
-                          6. Get NGO wallet address
-                          7. Get pool contract address
-                          8. Call CrisisPool.assignNGO(ngoWallet)    ──► TX
+1. Admin clicks "Approve"
+                ──POST /api/admin/pools/{poolId}/assignment-requests/{reqId}/approve──►
+                          2. Validate request exists & status=PENDING
+                          3. Validate NGO is still VERIFIED
+                          4. Get NGO wallet address
+                          5. Get pool contract address
+                          6. Call CrisisPool.assignNGO(ngoWallet)    ──► TX
                              using ADMIN wallet
-                          9. Wait for tx confirmation
-                         10. Update DB: add NGO to pool's            ──► INSERT pool_ngo_assignments
-                             assigned NGO list
-                         11. Return success
+                          7. Wait for tx confirmation
+                          8. Update request status = APPROVED        ──► UPDATE pool_assignment_requests
+                          9. Create assignment record                ──► INSERT pool_ngo_assignments
+                         10. Return success
                 ◄──────────────────────────
-12. NGO appears in pool's assigned list
+11. Request moves to "Approved" section
+12. NGO appears in pool's assigned NGO list
+```
+
+#### 3.5b Admin Rejects Assignment Request
+
+```
+[Frontend - Admin Panel]  [Backend]                                  [DB]
+─────────────────────────────────────────────────────────────────────────
+1. Admin clicks "Reject"
+   Enters rejection reason
+                ──POST /api/admin/pools/{poolId}/assignment-requests/{reqId}/reject──►
+                {reason: "NGO does not operate in this region"}
+                          2. Validate request exists & status=PENDING
+                          3. Update request status = REJECTED        ──► UPDATE pool_assignment_requests
+                             rejection_reason = reason
+                          4. Return success
+                ◄──────────────────────────
+5. No on-chain action
+6. NGO sees rejection reason in their dashboard
 ```
 
 ### 3.6 Admin Pauses/Resumes Donations
@@ -430,6 +544,7 @@ Same as 2.1 but:
    - Per-pool: balance, your claims today, your total claims
    - Recent submission statuses
    - "Submit Proof" button per pool
+   - "Browse Pools" button to request new assignments
 ```
 
 ### 5.2 Submit Proof of Expenditure
@@ -518,6 +633,66 @@ GET /api/proofs/my → Table of all submissions with status, amount, txHash link
 GET /api/trust/my → Current score + history graph + per-change breakdown
 ```
 
+### 5.5 Request Pool Assignment
+
+Verified NGOs can browse available pools and request to be assigned.
+
+```
+[Frontend]                          [Backend]                         [Storage]  [DB]
+──────────────────────────────────────────────────────────────────────────────────────
+
+STEP 1 — BROWSE AVAILABLE POOLS
+────────────────────────────────
+1. NGO clicks "Browse Pools" from dashboard
+                        ──GET /api/pools──►
+                                    2. Return active pools            ◄── SELECT crisis_pools
+                        ◄──────────────────────────
+3. UI shows pool cards (same as donor view)
+   but with "Request Assignment" button
+   Pools the NGO is already assigned to show
+   a "Currently Assigned" badge instead
+   Pools with pending requests show "Request Pending"
+
+STEP 2 — SUBMIT REQUEST
+───────────────────────
+4. NGO clicks "Request Assignment" on a pool
+5. Modal/page opens with:
+   - Pool details (read-only)
+   - Justification text field (why this NGO
+     should be assigned — region experience,
+     capacity, past work, etc.)
+   - Supporting document upload (optional —
+     e.g., past project reports, regional
+     registration, partner letters)
+6. NGO submits request
+
+                        ──POST /api/ngo/pools/{poolId}/request-assignment──►
+                        Multipart: {justification, supportingDoc (optional)}
+                                    7. Validate NGO is VERIFIED
+                                    8. Validate pool exists & is ACTIVE
+                                    9. Check no existing PENDING request
+                                       for this NGO + pool combo
+                                   10. Upload doc to S3 (if provided) ──► Store
+                                   11. Create assignment request       ──► INSERT pool_assignment_requests
+                                       status = PENDING
+                                   12. Return request object
+                        ◄──────────────────────────
+13. UI shows "Request Submitted — Pending Admin Review"
+
+STEP 3 — TRACK REQUEST STATUS
+─────────────────────────────
+14. NGO can view their requests:
+                        ──GET /api/ngo/assignment-requests──►
+                                   15. Return all requests by NGO     ◄── SELECT pool_assignment_requests
+                                       with pool names, statuses
+                        ◄──────────────────────────
+16. UI shows table:
+    - Pool name, region
+    - Status: PENDING / APPROVED / REJECTED
+    - If REJECTED: rejection reason
+    - Date submitted
+```
+
 ---
 
 ## 6. Backend Event Sync (Blockchain → DB)
@@ -559,6 +734,8 @@ DonationsPaused/Resumed             → Update pool.donationsPaused
 | `/ngo/apply` | Application form (if not verified) |
 | `/ngo/status` | Application status (pending/rejected) |
 | `/ngo/dashboard` | Dashboard (assigned pools, trust score) |
+| `/ngo/browse-pools` | Browse pools + request assignment |
+| `/ngo/assignment-requests` | Track assignment request statuses |
 | `/ngo/pools/:id/submit` | Submit proof |
 | `/ngo/submissions` | All submissions |
 | `/ngo/trust-score` | Trust score + history |
@@ -571,7 +748,7 @@ DonationsPaused/Resumed             → Update pool.donationsPaused
 | `/admin/ngo-applications/:id` | Application detail (approve/reject) |
 | `/admin/pools` | Pool list + create |
 | `/admin/pools/create` | Create pool form |
-| `/admin/pools/:id` | Pool detail (assign NGOs, pause) |
+| `/admin/pools/:id` | Pool detail (review assignment requests, manage NGOs, pause) |
 
 ---
 
