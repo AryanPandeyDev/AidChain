@@ -1,0 +1,144 @@
+===== migrations/001_create_users.up.sql =====
+CREATE TABLE users (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email           VARCHAR(255) UNIQUE NOT NULL,
+    password_hash   VARCHAR(255) NOT NULL,
+    name            VARCHAR(255) NOT NULL,
+    role            VARCHAR(20) NOT NULL CHECK (role IN ('DONOR', 'NGO', 'ADMIN')),
+    wallet_address  VARCHAR(42),
+    trust_score     REAL,
+    flagged         BOOLEAN DEFAULT FALSE,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_role ON users(role);
+
+===== migrations/002_create_ngo_applications.up.sql =====
+CREATE TABLE ngo_applications (
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    ngo_user_id             UUID NOT NULL REFERENCES users(id),
+    organization_name       VARCHAR(255) NOT NULL,
+    country                 VARCHAR(100) NOT NULL,
+    registration_number     VARCHAR(100) NOT NULL,
+    website                 VARCHAR(255),
+    registration_doc_url    TEXT NOT NULL,
+    tax_id_doc_url          TEXT NOT NULL,
+    proof_of_operation_url  TEXT NOT NULL,
+    status                  VARCHAR(20) NOT NULL DEFAULT 'AI_SCREENING'
+                            CHECK (status IN ('AI_SCREENING','PENDING_REVIEW','VERIFIED','REJECTED','AI_REJECTED')),
+    ai_confidence_score     REAL,
+    ai_summary              TEXT,
+    ai_verdict              VARCHAR(10),
+    ai_screened_at          TIMESTAMPTZ,
+    rejection_reason        TEXT,
+    reviewed_by             UUID REFERENCES users(id),
+    reviewed_at             TIMESTAMPTZ,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_ngo_app_user ON ngo_applications(ngo_user_id);
+CREATE INDEX idx_ngo_app_status ON ngo_applications(status);
+
+===== migrations/003_create_crisis_pools.up.sql =====
+CREATE TABLE crisis_pools (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name                VARCHAR(255) NOT NULL,
+    description         TEXT NOT NULL,
+    region              VARCHAR(255) NOT NULL,
+    region_lat          DOUBLE PRECISION NOT NULL,
+    region_lng          DOUBLE PRECISION NOT NULL,
+    region_radius_km    DOUBLE PRECISION NOT NULL,
+    target_amount       NUMERIC(20,6) NOT NULL,
+    contract_address    VARCHAR(42) NOT NULL UNIQUE,
+    max_per_claim       NUMERIC(20,6) NOT NULL,
+    max_per_ngo_per_day NUMERIC(20,6) NOT NULL,
+    max_per_ngo_pool    NUMERIC(20,6) NOT NULL,
+    donations_paused    BOOLEAN DEFAULT FALSE,
+    status              VARCHAR(20) NOT NULL DEFAULT 'ACTIVE'
+                        CHECK (status IN ('ACTIVE','DRAINED')),
+    created_by          UUID NOT NULL REFERENCES users(id),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+===== migrations/004_create_pool_assignment_requests.up.sql =====
+CREATE TABLE pool_assignment_requests (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    pool_id             UUID NOT NULL REFERENCES crisis_pools(id),
+    ngo_user_id         UUID NOT NULL REFERENCES users(id),
+    justification       TEXT NOT NULL,
+    supporting_doc_url  TEXT,
+    status              VARCHAR(20) NOT NULL DEFAULT 'PENDING'
+                        CHECK (status IN ('PENDING','APPROVED','REJECTED')),
+    rejection_reason    TEXT,
+    reviewed_by         UUID REFERENCES users(id),
+    reviewed_at         TIMESTAMPTZ,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(pool_id, ngo_user_id, status)
+);
+CREATE INDEX idx_assign_req_pool ON pool_assignment_requests(pool_id);
+CREATE INDEX idx_assign_req_ngo ON pool_assignment_requests(ngo_user_id);
+CREATE INDEX idx_assign_req_status ON pool_assignment_requests(status);
+
+===== migrations/005_create_pool_ngo_assignments.up.sql =====
+CREATE TABLE pool_ngo_assignments (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    pool_id     UUID NOT NULL REFERENCES crisis_pools(id),
+    ngo_user_id UUID NOT NULL REFERENCES users(id),
+    request_id  UUID REFERENCES pool_assignment_requests(id),
+    assigned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(pool_id, ngo_user_id)
+);
+
+===== migrations/006_create_donations.up.sql =====
+CREATE TABLE donations (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    donor_id    UUID NOT NULL REFERENCES users(id),
+    pool_id     UUID NOT NULL REFERENCES crisis_pools(id),
+    amount      NUMERIC(20,6) NOT NULL,
+    tx_hash     VARCHAR(66) NOT NULL UNIQUE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_donations_donor ON donations(donor_id);
+CREATE INDEX idx_donations_pool ON donations(pool_id);
+
+===== migrations/007_create_proof_submissions.up.sql =====
+CREATE TABLE proof_submissions (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    ngo_user_id         UUID NOT NULL REFERENCES users(id),
+    pool_id             UUID NOT NULL REFERENCES crisis_pools(id),
+    receipt_image_url   TEXT NOT NULL,
+    ocr_amount          NUMERIC(20,6) NOT NULL,
+    ocr_vendor          VARCHAR(255) NOT NULL,
+    ocr_date            VARCHAR(50) NOT NULL,
+    claimed_amount      NUMERIC(20,6) NOT NULL,
+    latitude            DOUBLE PRECISION NOT NULL,
+    longitude           DOUBLE PRECISION NOT NULL,
+    verification_status VARCHAR(20) NOT NULL DEFAULT 'PENDING'
+                        CHECK (verification_status IN ('PENDING','VERIFIED','REJECTED')),
+    verification_score  REAL,
+    proof_id_onchain    VARCHAR(66),
+    tx_hash             VARCHAR(66),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_proofs_ngo ON proof_submissions(ngo_user_id);
+CREATE INDEX idx_proofs_pool ON proof_submissions(pool_id);
+CREATE INDEX idx_proofs_status ON proof_submissions(verification_status);
+
+===== migrations/008_create_trust_score_logs.up.sql =====
+CREATE TABLE trust_score_logs (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    ngo_user_id     UUID NOT NULL REFERENCES users(id),
+    previous_score  REAL NOT NULL,
+    new_score       REAL NOT NULL,
+    reason          TEXT NOT NULL,
+    submission_id   UUID REFERENCES proof_submissions(id),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_trust_logs_ngo ON trust_score_logs(ngo_user_id);
+
+===== migrations/009_create_event_sync_cursor.up.sql =====
+CREATE TABLE event_sync_cursor (
+    id          INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    last_block  BIGINT NOT NULL DEFAULT 0
+);
+INSERT INTO event_sync_cursor (last_block) VALUES (0);
+

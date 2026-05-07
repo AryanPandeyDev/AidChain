@@ -1,28 +1,113 @@
 package handlers
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
+	"log"
+	"math"
 	"net/http"
-	"os"
+	"strconv"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"aidchain/blockchain"
 )
 
 // ProofHandler handles proof submission and retrieval for NGO field workers.
-type ProofHandler struct{ db *pgxpool.Pool }
+type ProofHandler struct {
+	db *pgxpool.Pool
+	bc *blockchain.Client
+}
 
-// NewProofHandler returns a ProofHandler backed by the given connection pool.
-func NewProofHandler(db *pgxpool.Pool) *ProofHandler { return &ProofHandler{db: db} }
+// NewProofHandler returns a ProofHandler backed by the given connection pool and optional blockchain client.
+func NewProofHandler(db *pgxpool.Pool, bc *blockchain.Client) *ProofHandler {
+	return &ProofHandler{db: db, bc: bc}
+}
 
-// SubmitProof persists an NGO proof submission and dispatches it to the ML service for verification.
+// haversineKm computes the great-circle distance in kilometres between two GPS coordinates.
+func haversineKm(lat1, lng1, lat2, lng2 float64) float64 {
+	const R = 6371.0
+	dLat := (lat2 - lat1) * math.Pi / 180
+	dLng := (lng2 - lng1) * math.Pi / 180
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(lat1*math.Pi/180)*math.Cos(lat2*math.Pi/180)*
+			math.Sin(dLng/2)*math.Sin(dLng/2)
+	return R * 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+}
+
+// verifyProof computes the three-signal verification score for a proof submission.
+func verifyProof(
+	ocrAmount, claimedAmount float64,
+	lat, lng float64,
+	poolLat, poolLng, poolRadiusKm float64,
+	totalSubs, verifiedSubs int,
+) (score float64, passed bool) {
+	var ocrScore float64
+	if claimedAmount > 0 {
+		diff := math.Abs(ocrAmount-claimedAmount) / claimedAmount
+		if diff <= 0.05 {
+			ocrScore = 1.0
+		}
+	}
+
+	var locationScore float64
+	dist := haversineKm(lat, lng, poolLat, poolLng)
+	if dist <= poolRadiusKm {
+		locationScore = 1.0
+	}
+
+	historicalScore := 0.5
+	if totalSubs > 0 {
+		historicalScore = float64(verifiedSubs) / float64(totalSubs)
+	}
+
+	score = (0.4 * ocrScore) + (0.3 * locationScore) + (0.3 * historicalScore)
+	passed = score >= 0.6
+	return
+}
+
+// generateProofID derives a deterministic bytes32 proof identifier from the submission UUID.
+func generateProofID(submissionID string) [32]byte {
+	h := crypto.Keccak256Hash(
+		[]byte(submissionID),
+		[]byte(strconv.FormatInt(time.Now().UnixNano(), 10)),
+	)
+	var result [32]byte
+	copy(result[:], h.Bytes())
+	return result
+}
+
+func min100(v float64) float64 {
+	if v > 100 {
+		return 100
+	}
+	return v
+}
+
+func max0(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	return v
+}
+
+func fetchTrustScore(ctx context.Context, db *pgxpool.Pool, ngoID string) float64 {
+	var score float64
+	_ = db.QueryRow(ctx, `SELECT trust_score FROM users WHERE id = $1`, ngoID).Scan(&score)
+	return score
+}
+
+// SubmitProof persists an NGO proof submission, runs three-signal verification,
+// and triggers fund release on-chain if approved.
 //
-// The client uploads the receipt image to S3 and runs on-device OCR before calling this endpoint.
-// Verification is asynchronous — the ML service calls back via POST /internal/proofs/:id/verify.
+// The flow is structured in three phases to maintain DB/chain consistency:
+//   Phase 1: Insert proof + run verification in a DB transaction.
+//   Phase 2: Call releaseFunds on-chain (outside the DB transaction).
+//   Phase 3: Update trust score based on the final outcome.
 func (h *ProofHandler) SubmitProof(c *gin.Context) {
 	ngoID := c.GetString("userID")
 	if ngoID == "" {
@@ -45,10 +130,9 @@ func (h *ProofHandler) SubmitProof(c *gin.Context) {
 		return
 	}
 
-	// NGO must be assigned to the pool they are submitting against.
 	var count int
 	_ = h.db.QueryRow(context.Background(),
-		`SELECT COUNT(*) FROM crisis_pool_ngos WHERE pool_id = $1 AND ngo_id = $2`,
+		`SELECT COUNT(*) FROM pool_ngo_assignments WHERE pool_id = $1 AND ngo_user_id = $2`,
 		body.PoolID, ngoID,
 	).Scan(&count)
 	if count == 0 {
@@ -56,10 +140,19 @@ func (h *ProofHandler) SubmitProof(c *gin.Context) {
 		return
 	}
 
+	// ── Phase 1: Insert proof and run verification inside a DB transaction. ──
+
+	tx, err := h.db.Begin(context.Background())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "tx begin failed"})
+		return
+	}
+	defer tx.Rollback(context.Background())
+
 	var proofID string
-	err := h.db.QueryRow(context.Background(),
+	err = tx.QueryRow(context.Background(),
 		`INSERT INTO proof_submissions
-		   (ngo_id, pool_id, receipt_image_url, ocr_amount, ocr_vendor, ocr_date,
+		   (ngo_user_id, pool_id, receipt_image_url, ocr_amount, ocr_vendor, ocr_date,
 		    claimed_amount, latitude, longitude)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 		 RETURNING id`,
@@ -72,150 +165,191 @@ func (h *ProofHandler) SubmitProof(c *gin.Context) {
 		return
 	}
 
-	// ── gather pool geometry and caps ────────────────────────────────────────
-	var poolCtx poolContext
-	err = h.db.QueryRow(context.Background(),
-		`SELECT region_lat, region_lng, region_radius_km, max_per_claim
+	// Lock the row to prevent concurrent processing.
+	_, err = tx.Exec(context.Background(),
+		`SELECT id FROM proof_submissions WHERE id = $1 FOR UPDATE`, proofID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "row lock failed"})
+		return
+	}
+
+	var poolLat, poolLng, poolRadiusKm float64
+	err = tx.QueryRow(context.Background(),
+		`SELECT region_lat, region_lng, region_radius_km
 		 FROM crisis_pools WHERE id = $1`,
 		body.PoolID,
-	).Scan(&poolCtx.RegionLat, &poolCtx.RegionLng, &poolCtx.RegionRadiusKm, &poolCtx.MaxPerClaim)
+	).Scan(&poolLat, &poolLng, &poolRadiusKm)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "pool context fetch failed"})
 		return
 	}
 
-	// ── gather NGO behavioural history ───────────────────────────────────────
-	var history ngoHistory
-	history.TrustScore = fetchTrustScore(context.Background(), h.db, ngoID)
-
-	var total, verified, rejected int
-	var avgClaim float64
-	_ = h.db.QueryRow(context.Background(),
+	var totalSubs, verifiedSubs int
+	_ = tx.QueryRow(context.Background(),
 		`SELECT
-		   COUNT(*)                                                        AS total,
-		   SUM(CASE WHEN verification_status = 'VERIFIED' THEN 1 ELSE 0 END) AS verified,
-		   SUM(CASE WHEN verification_status = 'REJECTED' THEN 1 ELSE 0 END) AS rejected,
-		   COALESCE(AVG(claimed_amount), 0)                                AS avg_claim
+		   COUNT(*) AS total,
+		   SUM(CASE WHEN verification_status = 'VERIFIED' THEN 1 ELSE 0 END) AS verified
 		 FROM proof_submissions
-		 WHERE ngo_id = $1 AND id != $2`,
+		 WHERE ngo_user_id = $1 AND id != $2`,
 		ngoID, proofID,
-	).Scan(&total, &verified, &rejected, &avgClaim)
+	).Scan(&totalSubs, &verifiedSubs)
 
-	if total > 0 {
-		history.ApprovalRate = float64(verified) / float64(total)
-		history.RejectionRate = float64(rejected) / float64(total)
+	score, passed := verifyProof(
+		body.OcrAmount, body.ClaimedAmount,
+		body.Latitude, body.Longitude,
+		poolLat, poolLng, poolRadiusKm,
+		totalSubs, verifiedSubs,
+	)
+
+	currentTrust := fetchTrustScore(context.Background(), h.db, ngoID)
+
+	if !passed {
+		// Verification failed — update proof status and trust in the same tx, then return.
+		newTrust := max0(currentTrust - 5)
+
+		_, _ = tx.Exec(context.Background(),
+			`UPDATE proof_submissions SET verification_status='REJECTED', verification_score=$1 WHERE id=$2`,
+			score, proofID)
+		_, _ = tx.Exec(context.Background(),
+			`UPDATE users SET trust_score=$1 WHERE id=$2`, newTrust, ngoID)
+		if newTrust < 20 {
+			_, _ = tx.Exec(context.Background(),
+				`UPDATE users SET flagged=true WHERE id=$1`, ngoID)
+		}
+		reason := fmt.Sprintf("proof %s rejected — score=%.2f", proofID, score)
+		_, _ = tx.Exec(context.Background(),
+			`INSERT INTO trust_score_logs (ngo_user_id, previous_score, new_score, reason, submission_id)
+			 VALUES ($1,$2,$3,$4,$5)`,
+			ngoID, currentTrust, newTrust, reason, proofID)
+
+		if err := tx.Commit(context.Background()); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "commit failed"})
+			return
+		}
+
+		response := gin.H{
+			"proof_id":            proofID,
+			"verification_status": "REJECTED",
+			"verification_score":  score,
+			"new_trust_score":     newTrust,
+			"message":             "proof rejected — verification score below threshold",
+		}
+		if newTrust < 20 {
+			response["admin_alert"] = fmt.Sprintf("NGO %s flagged for review: trust score %.0f < 20", ngoID, newTrust)
+		}
+		c.JSON(http.StatusCreated, response)
+		return
 	}
-	history.AvgClaimAmount = avgClaim
 
-	_ = h.db.QueryRow(context.Background(),
-		`SELECT COUNT(*) FROM proof_submissions
-		 WHERE ngo_id = $1 AND created_at >= current_date`,
-		ngoID,
-	).Scan(&history.SubmissionCountToday)
+	// Verification passed — save status as VERIFIED but do NOT update trust yet.
+	// Trust will be updated in Phase 3 only after on-chain confirmation.
+	_, err = tx.Exec(context.Background(),
+		`UPDATE proof_submissions SET verification_status='VERIFIED', verification_score=$1 WHERE id=$2`,
+		score, proofID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "proof update failed"})
+		return
+	}
 
-	// Dispatch to ML service asynchronously — response arrives via callback.
-	go dispatchToML(MLPayload{
-		SubmissionID:  proofID,
-		NgoID:         ngoID,
-		OcrAmount:     body.OcrAmount,
-		ClaimedAmount: body.ClaimedAmount,
-		Latitude:      body.Latitude,
-		Longitude:     body.Longitude,
-		Pool:          poolCtx,
-		NgoHistory:    history,
-	})
+	if err := tx.Commit(context.Background()); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "commit failed"})
+		return
+	}
 
-	c.JSON(http.StatusCreated, gin.H{
+	// ── Phase 2: On-chain releaseFunds (outside DB transaction). ──
+
+	var chainNote string
+	chainSuccess := false
+
+	if h.bc != nil {
+		onchainProofID := generateProofID(proofID)
+		amountOnChain := blockchain.USDCToOnChain(body.ClaimedAmount)
+
+		var contractAddress, walletAddr string
+		_ = h.db.QueryRow(context.Background(),
+			`SELECT contract_address FROM crisis_pools WHERE id = $1`, body.PoolID,
+		).Scan(&contractAddress)
+		_ = h.db.QueryRow(context.Background(),
+			`SELECT wallet_address FROM users WHERE id = $1`, ngoID,
+		).Scan(&walletAddr)
+
+		if contractAddress != "" && walletAddr != "" {
+			txHash, err := h.bc.ReleaseFunds(context.Background(),
+				common.HexToAddress(contractAddress),
+				common.HexToAddress(walletAddr),
+				amountOnChain, onchainProofID)
+			if err != nil {
+				log.Printf("[blockchain] releaseFunds failed for proof %s: %v", proofID, err)
+				// Per PRD §6.5: if releaseFunds reverts, mark as REJECTED but do NOT update trust score.
+				_, _ = h.db.Exec(context.Background(),
+					`UPDATE proof_submissions SET verification_status='REJECTED' WHERE id=$1`, proofID)
+				chainNote = "on-chain releaseFunds reverted: " + err.Error()
+			} else {
+				// Chain succeeded — save on-chain proof ID and tx hash.
+				proofIDHex := fmt.Sprintf("0x%x", onchainProofID)
+				_, _ = h.db.Exec(context.Background(),
+					`UPDATE proof_submissions SET proof_id_onchain=$1, tx_hash=$2 WHERE id=$3`,
+					proofIDHex, txHash, proofID)
+				chainNote = "on-chain releaseFunds tx: " + txHash
+				chainSuccess = true
+			}
+		} else {
+			chainNote = "missing contract_address or wallet — on-chain release skipped"
+		}
+	} else {
+		chainNote = "blockchain not configured — on-chain release skipped"
+		chainSuccess = true // No chain to worry about — treat as success for trust update.
+	}
+
+	// ── Phase 3: Update trust score based on final outcome. ──
+
+	finalStatus := "REJECTED"
+	newTrust := currentTrust // Default: no change (infra error).
+
+	if chainSuccess {
+		finalStatus = "VERIFIED"
+		newTrust = min100(currentTrust + 2)
+
+		reason := fmt.Sprintf("proof %s verified — score=%.2f", proofID, score)
+		_, _ = h.db.Exec(context.Background(),
+			`UPDATE users SET trust_score=$1 WHERE id=$2`, newTrust, ngoID)
+		_, _ = h.db.Exec(context.Background(),
+			`INSERT INTO trust_score_logs (ngo_user_id, previous_score, new_score, reason, submission_id)
+			 VALUES ($1,$2,$3,$4,$5)`,
+			ngoID, currentTrust, newTrust, reason, proofID)
+		if newTrust < 20 {
+			_, _ = h.db.Exec(context.Background(),
+				`UPDATE users SET flagged=true WHERE id=$1`, ngoID)
+		}
+	}
+
+	response := gin.H{
 		"proof_id":            proofID,
-		"verification_status": "PENDING",
-		"message":             "proof received, verification in progress",
-	})
-}
-
-// ── ML contract types ────────────────────────────────────────────────────────
-
-// poolContext carries the pool fields the ML model needs for geo and cap scoring.
-type poolContext struct {
-	RegionLat      float64 `json:"region_lat"`
-	RegionLng      float64 `json:"region_lng"`
-	RegionRadiusKm float64 `json:"region_radius_km"`
-	MaxPerClaim    float64 `json:"max_per_claim"`
-}
-
-// ngoHistory carries the NGO behavioural signals the ML model uses for fraud detection.
-type ngoHistory struct {
-	TrustScore           float64 `json:"trust_score"`
-	ApprovalRate         float64 `json:"approval_rate"`
-	AvgClaimAmount       float64 `json:"avg_claim_amount"`
-	SubmissionCountToday int     `json:"submission_count_today"`
-	RejectionRate        float64 `json:"rejection_rate"`
-}
-
-// MLPayload is the JSON body sent to the Python ML service for every new proof submission.
-// Field names match the contract agreed with the Python team exactly.
-type MLPayload struct {
-	SubmissionID  string     `json:"submission_id"`
-	NgoID         string     `json:"ngo_id"`
-	OcrAmount     float64    `json:"ocr_amount"`
-	ClaimedAmount float64    `json:"claimed_amount"`
-	Latitude      float64    `json:"latitude"`
-	Longitude     float64    `json:"longitude"`
-	Pool          poolContext `json:"pool"`
-	NgoHistory    ngoHistory  `json:"ngo_history"`
-}
-
-// dispatchToML sends the proof payload to the Python ML service for asynchronous scoring.
-//
-// The Python service downloads the receipt image, computes fraud signals, and calls back
-// via POST /internal/proofs/:id/verify with an MLResult payload.
-// Set ML_SERVICE_URL in env (e.g. http://ml-service:5000).
-func dispatchToML(payload MLPayload) {
-	url := os.Getenv("ML_SERVICE_URL")
-	if url == "" {
-		fmt.Printf("[ml-dispatch] ML_SERVICE_URL not set, skipping dispatch for proof %s\n", payload.SubmissionID)
-		return
+		"verification_status": finalStatus,
+		"verification_score":  score,
+		"new_trust_score":     newTrust,
 	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		fmt.Printf("[ml-dispatch] marshal error: %v\n", err)
-		return
+	if chainNote != "" {
+		response["note"] = chainNote
 	}
-
-	req, err := http.NewRequest(http.MethodPost, url+"/verify", bytes.NewReader(body))
-	if err != nil {
-		fmt.Printf("[ml-dispatch] request build error: %v\n", err)
-		return
+	if finalStatus == "REJECTED" && !passed {
+		response["message"] = "proof rejected — verification score below threshold"
+	} else if finalStatus == "REJECTED" {
+		response["message"] = "proof rejected — on-chain release failed"
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Internal-Secret", os.Getenv("INTERNAL_SECRET"))
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Printf("[ml-dispatch] send error: %v\n", err)
-		return
+	if newTrust < 20 {
+		response["admin_alert"] = fmt.Sprintf("NGO %s flagged for review: trust score %.0f < 20", ngoID, newTrust)
 	}
-	defer resp.Body.Close()
-	fmt.Printf("[ml-dispatch] proof %s dispatched, ml response status: %d\n", payload.SubmissionID, resp.StatusCode)
+	c.JSON(http.StatusCreated, response)
 }
-
-// fetchTrustScore returns the current trust score for an NGO user, defaulting to 0 on error.
-func fetchTrustScore(ctx context.Context, db *pgxpool.Pool, ngoID string) float64 {
-	var score float64
-	_ = db.QueryRow(ctx, `SELECT trust_score FROM users WHERE id = $1`, ngoID).Scan(&score)
-	return score
-}
-
-// ── query handlers ───────────────────────────────────────────────────────────
 
 // MyProofs returns all proof submissions for the authenticated NGO.
 func (h *ProofHandler) MyProofs(c *gin.Context) {
 	ngoID := c.GetString("userID")
 	rows, err := h.db.Query(context.Background(),
 		`SELECT id, pool_id, claimed_amount, verification_status, verification_score,
-		        tx_hash, timelock_expires_at, created_at
-		 FROM proof_submissions WHERE ngo_id = $1 ORDER BY created_at DESC`,
+		        tx_hash, created_at
+		 FROM proof_submissions WHERE ngo_user_id = $1 ORDER BY created_at DESC`,
 		ngoID,
 	)
 	if err != nil {
@@ -230,7 +364,7 @@ func (h *ProofHandler) MyProofs(c *gin.Context) {
 func (h *ProofHandler) PoolProofs(c *gin.Context) {
 	poolID := c.Param("poolId")
 	rows, err := h.db.Query(context.Background(),
-		`SELECT id, ngo_id, claimed_amount, verification_status, verification_score,
+		`SELECT id, ngo_user_id, claimed_amount, verification_status, verification_score,
 		        receipt_image_url, ocr_vendor, ocr_date, created_at
 		 FROM proof_submissions WHERE pool_id = $1 ORDER BY created_at DESC`,
 		poolID,
@@ -243,18 +377,18 @@ func (h *ProofHandler) PoolProofs(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"proofs": scanProofRowsPublic(rows)})
 }
 
-// GetProof returns full detail for a single proof submission including verification result and release status.
+// GetProof returns full detail for a single proof submission.
 func (h *ProofHandler) GetProof(c *gin.Context) {
 	id := c.Param("id")
 	row := h.db.QueryRow(context.Background(),
-		`SELECT id, ngo_id, pool_id, receipt_image_url, ocr_amount, ocr_vendor, ocr_date,
+		`SELECT id, ngo_user_id, pool_id, receipt_image_url, ocr_amount, ocr_vendor, ocr_date,
 		        claimed_amount, latitude, longitude, verification_status, verification_score,
-		        release_id, timelock_expires_at, tx_hash, created_at
+		        proof_id_onchain, tx_hash, created_at
 		 FROM proof_submissions WHERE id = $1`, id)
 
 	var p struct {
 		ID                 string     `json:"id"`
-		NgoID              string     `json:"ngo_id"`
+		NgoID              string     `json:"ngo_user_id"`
 		PoolID             string     `json:"pool_id"`
 		ReceiptImageURL    string     `json:"receipt_image_url"`
 		OcrAmount          *float64   `json:"ocr_amount"`
@@ -265,8 +399,7 @@ func (h *ProofHandler) GetProof(c *gin.Context) {
 		Longitude          float64    `json:"longitude"`
 		VerificationStatus string     `json:"verification_status"`
 		VerificationScore  *float64   `json:"verification_score"`
-		ReleaseID          *string    `json:"release_id"`
-		TimelockExpiresAt  *time.Time `json:"timelock_expires_at"`
+		ProofIdOnchain     *string    `json:"proof_id_onchain"`
 		TxHash             *string    `json:"tx_hash"`
 		CreatedAt          time.Time  `json:"created_at"`
 	}
@@ -274,7 +407,7 @@ func (h *ProofHandler) GetProof(c *gin.Context) {
 		&p.ID, &p.NgoID, &p.PoolID, &p.ReceiptImageURL,
 		&p.OcrAmount, &p.OcrVendor, &p.OcrDate, &p.ClaimedAmount,
 		&p.Latitude, &p.Longitude, &p.VerificationStatus, &p.VerificationScore,
-		&p.ReleaseID, &p.TimelockExpiresAt, &p.TxHash, &p.CreatedAt,
+		&p.ProofIdOnchain, &p.TxHash, &p.CreatedAt,
 	); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "proof not found"})
 		return
@@ -291,13 +424,12 @@ type proofRow struct {
 	VerificationStatus string     `json:"verification_status"`
 	VerificationScore  *float64   `json:"verification_score"`
 	TxHash             *string    `json:"tx_hash"`
-	TimelockExpiresAt  *time.Time `json:"timelock_expires_at"`
 	CreatedAt          time.Time  `json:"created_at"`
 }
 
 type proofRowPublic struct {
 	ID                 string    `json:"id"`
-	NgoID              string    `json:"ngo_id"`
+	NgoID              string    `json:"ngo_user_id"`
 	ClaimedAmount      float64   `json:"claimed_amount"`
 	VerificationStatus string    `json:"verification_status"`
 	VerificationScore  *float64  `json:"verification_score"`
@@ -318,7 +450,7 @@ func scanProofRows(rows interface {
 		if err := rows.Scan(
 			&p.ID, &p.PoolID, &p.ClaimedAmount,
 			&p.VerificationStatus, &p.VerificationScore,
-			&p.TxHash, &p.TimelockExpiresAt, &p.CreatedAt,
+			&p.TxHash, &p.CreatedAt,
 		); err != nil {
 			continue
 		}

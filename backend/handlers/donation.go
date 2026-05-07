@@ -9,60 +9,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// DonationHandler handles recording and querying USDC donations.
+// DonationHandler handles querying USDC donations.
+// Donations are recorded via the blockchain event listener, not via a POST endpoint.
 type DonationHandler struct{ db *pgxpool.Pool }
 
 // NewDonationHandler returns a DonationHandler backed by the given connection pool.
 func NewDonationHandler(db *pgxpool.Pool) *DonationHandler { return &DonationHandler{db: db} }
-
-// RecordDonation persists a donation after the on-chain donate() transaction has been submitted.
-func (h *DonationHandler) RecordDonation(c *gin.Context) {
-	donorID, _ := c.Get("userID")
-
-	var body struct {
-		PoolID string  `json:"pool_id" binding:"required,uuid"`
-		Amount float64 `json:"amount"  binding:"required,gt=0"`
-		TxHash string  `json:"tx_hash" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	tx, err := h.db.Begin(context.Background())
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "tx begin failed"})
-		return
-	}
-	defer tx.Rollback(context.Background())
-
-	var donID string
-	err = tx.QueryRow(context.Background(),
-		`INSERT INTO donations (donor_id, pool_id, amount, tx_hash)
-		 VALUES ($1,$2,$3,$4) RETURNING id`,
-		donorID, body.PoolID, body.Amount, body.TxHash,
-	).Scan(&donID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "donation insert failed"})
-		return
-	}
-
-	// Mirror the on-chain balance in the off-chain funded_amount column.
-	_, err = tx.Exec(context.Background(),
-		`UPDATE crisis_pools SET funded_amount = funded_amount + $1 WHERE id = $2`,
-		body.Amount, body.PoolID,
-	)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "funded_amount update failed"})
-		return
-	}
-
-	if err := tx.Commit(context.Background()); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "commit failed"})
-		return
-	}
-	c.JSON(http.StatusCreated, gin.H{"donation_id": donID})
-}
 
 // MyDonations returns all donations made by the authenticated donor.
 func (h *DonationHandler) MyDonations(c *gin.Context) {

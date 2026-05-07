@@ -10,6 +10,7 @@ def _env(key: str, default: str = "") -> str:
 
 # ── LLM ───────────────────────────────────────────────────────────────────────
 OPENAI_API_KEY: str = _env("OPENAI_API_KEY")
+OPENAI_API_BASE: str = _env("OPENAI_API_BASE", "https://models.inference.ai.azure.com")
 LLM_MODEL: str = _env("LLM_MODEL", "gpt-4o-mini")
 LLM_TEMPERATURE: float = float(_env("LLM_TEMPERATURE", "0.2"))
 

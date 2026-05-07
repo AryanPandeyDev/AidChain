@@ -3,6 +3,7 @@ package middleware
 import (
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -71,13 +72,20 @@ func InternalSecret() gin.HandlerFunc {
 	}
 }
 
-// IssueToken signs and returns a 72-hour JWT for the given user ID and role.
+// IssueToken signs and returns a JWT for the given user ID and role.
+// Token expiry is read from JWT_EXPIRY_HOURS env var, defaulting to 24 hours.
 func IssueToken(userID, role string) (string, error) {
+	hours := 24
+	if v := os.Getenv("JWT_EXPIRY_HOURS"); v != "" {
+		if h, err := strconv.Atoi(v); err == nil && h > 0 {
+			hours = h
+		}
+	}
 	claims := &Claims{
 		UserID: userID,
 		Role:   role,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(72 * time.Hour)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(hours) * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},
 	}

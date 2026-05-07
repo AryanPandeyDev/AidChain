@@ -1,0 +1,17 @@
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment Variables
+.env
+.env.local
+
+# Build artifacts and temps
+tmp/
+temp/
+build/
+dist/

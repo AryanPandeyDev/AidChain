@@ -1,36 +1,47 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log"
 	"net/http"
+	"os"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"aidchain/blockchain"
 )
 
 // NGOHandler handles NGO application submission and admin review.
-type NGOHandler struct{ db *pgxpool.Pool }
+type NGOHandler struct {
+	db *pgxpool.Pool
+	bc *blockchain.Client
+}
 
-// NewNGOHandler returns an NGOHandler backed by the given connection pool.
-func NewNGOHandler(db *pgxpool.Pool) *NGOHandler { return &NGOHandler{db: db} }
+// NewNGOHandler returns an NGOHandler backed by the given connection pool and optional blockchain client.
+func NewNGOHandler(db *pgxpool.Pool, bc *blockchain.Client) *NGOHandler {
+	return &NGOHandler{db: db, bc: bc}
+}
 
-// Apply submits a new NGO application with organization details and document URLs.
-//
-// Document files are uploaded to S3 by the client beforehand; only the
-// resulting signed URLs are sent here.
+type applyBody struct {
+	OrganizationName    string `json:"organization_name"        binding:"required"`
+	Country             string `json:"country"                  binding:"required"`
+	RegistrationNumber  string `json:"registration_number"      binding:"required"`
+	RegistrationDocURL  string `json:"registration_doc_url"     binding:"required,url"`
+	TaxIDDocURL         string `json:"tax_id_doc_url"           binding:"required,url"`
+	ProofOfOperationURL string `json:"proof_of_operation_url"   binding:"required,url"`
+	Website             string `json:"website"`
+}
+
+// Apply submits a new NGO application and triggers asynchronous AI pre-screening.
 func (h *NGOHandler) Apply(c *gin.Context) {
 	userID, _ := c.Get("userID")
 
-	var body struct {
-		OrganizationName       string `json:"organization_name"         binding:"required"`
-		Country                string `json:"country"                   binding:"required"`
-		RegistrationNumber     string `json:"registration_number"       binding:"required"`
-		RegistrationDocURL     string `json:"registration_doc_url"      binding:"required,url"`
-		TaxIDDocURL            string `json:"tax_id_doc_url"            binding:"required,url"`
-		ProofOfOperationDocURL string `json:"proof_of_operation_doc_url" binding:"required,url"`
-		Website                string `json:"website"`
-	}
+	var body applyBody
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -51,17 +62,98 @@ func (h *NGOHandler) Apply(c *gin.Context) {
 	err := h.db.QueryRow(context.Background(),
 		`INSERT INTO ngo_applications
 		   (ngo_user_id, organization_name, country, registration_number,
-		    registration_doc_url, tax_id_doc_url, proof_of_operation_doc_url, website)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		    registration_doc_url, tax_id_doc_url, proof_of_operation_url, website, status)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 		 RETURNING id`,
 		userID, body.OrganizationName, body.Country, body.RegistrationNumber,
-		body.RegistrationDocURL, body.TaxIDDocURL, body.ProofOfOperationDocURL, body.Website,
+		body.RegistrationDocURL, body.TaxIDDocURL, body.ProofOfOperationURL, body.Website, "AI_SCREENING",
 	).Scan(&appID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "application submission failed"})
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"application_id": appID, "status": "PENDING_REVIEW"})
+
+	go screenNGOApplication(appID, body, h.db)
+
+	c.JSON(http.StatusCreated, gin.H{"application_id": appID, "status": "AI_SCREENING"})
+}
+
+// screenNGOApplication calls the AI screening service and updates the application status with the verdict.
+func screenNGOApplication(appID string, body applyBody, db *pgxpool.Pool) {
+	fallback := func() {
+		_, _ = db.Exec(context.Background(), `UPDATE ngo_applications SET status='PENDING_REVIEW' WHERE id=$1`, appID)
+	}
+
+	url := os.Getenv("AI_SCREENING_URL")
+	if url == "" {
+		log.Printf("[ai-screen] AI_SCREENING_URL not set, skipping screening for application %s", appID)
+		fallback()
+		return
+	}
+
+	payload := map[string]any{
+		"application_id":             appID,
+		"organization_name":          body.OrganizationName,
+		"country":                    body.Country,
+		"registration_number":        body.RegistrationNumber,
+		"website":                    body.Website,
+		"registration_doc_url":       body.RegistrationDocURL,
+		"tax_id_doc_url":             body.TaxIDDocURL,
+		"proof_of_operation_doc_url": body.ProofOfOperationURL,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("[ai-screen] marshal error for application %s: %v", appID, err)
+		fallback()
+		return
+	}
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Post(url+"/screen", "application/json", bytes.NewReader(data))
+	if err != nil {
+		log.Printf("[ai-screen] request failed for application %s: %v", appID, err)
+		fallback()
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("[ai-screen] request failed with status %d for application %s", resp.StatusCode, appID)
+		fallback()
+		return
+	}
+
+	var result struct {
+		ApplicationID     string         `json:"application_id"`
+		AIVerdict         string         `json:"aiVerdict"`
+		AIConfidenceScore float64        `json:"aiConfidenceScore"`
+		AISummary         string         `json:"aiSummary"`
+		Evidence          map[string]any `json:"evidence"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		log.Printf("[ai-screen] decode error for application %s: %v", appID, err)
+		fallback()
+		return
+	}
+
+	newStatus := "PENDING_REVIEW"
+	if result.AIVerdict == "FAIL" {
+		newStatus = "AI_REJECTED"
+	}
+
+	// Serialize evidence to JSON for storage.
+	var evidenceJSON []byte
+	if result.Evidence != nil {
+		evidenceJSON, _ = json.Marshal(result.Evidence)
+	}
+
+	_, _ = db.Exec(context.Background(),
+		`UPDATE ngo_applications
+		 SET status=$1, ai_verdict=$2, ai_confidence_score=$3, ai_summary=$4, ai_evidence=$5, ai_screened_at=now()
+		 WHERE id=$6`,
+		newStatus, result.AIVerdict, result.AIConfidenceScore, result.AISummary, evidenceJSON, appID,
+	)
+	log.Printf("[ai-screen] application %s screened: verdict=%s score=%.2f", appID, result.AIVerdict, result.AIConfidenceScore)
 }
 
 // ApplicationStatus returns the most recent application status for the authenticated NGO.
@@ -100,10 +192,13 @@ func (h *NGOHandler) ListApplications(c *gin.Context) {
 	query := `SELECT id, ngo_user_id, organization_name, country, status, created_at
 			  FROM ngo_applications`
 	args := []any{}
-	if status != "" {
-		query += ` WHERE status = $1`
-		args = append(args, status)
+
+	if status == "" {
+		status = "PENDING_REVIEW"
 	}
+	query += ` WHERE status = $1`
+	args = append(args, status)
+	
 	query += ` ORDER BY created_at ASC`
 
 	rows, err := h.db.Query(context.Background(), query, args...)
@@ -132,13 +227,15 @@ func (h *NGOHandler) ListApplications(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"applications": result, "count": len(result)})
 }
 
-// GetApplication returns a single NGO application with all document URLs and review metadata.
+// GetApplication returns a single NGO application with all document URLs, AI screening results, and review metadata.
 func (h *NGOHandler) GetApplication(c *gin.Context) {
 	id := c.Param("id")
 	row := h.db.QueryRow(context.Background(),
 		`SELECT id, ngo_user_id, organization_name, country, registration_number,
-		        registration_doc_url, tax_id_doc_url, proof_of_operation_doc_url,
-		        website, status, rejection_reason, reviewed_by, reviewed_at, created_at
+		        registration_doc_url, tax_id_doc_url, proof_of_operation_url,
+		        website, status,
+		        ai_verdict, ai_confidence_score, ai_summary, ai_evidence, ai_screened_at,
+		        rejection_reason, reviewed_by, reviewed_at, created_at
 		 FROM ngo_applications WHERE id = $1`, id)
 
 	var app struct {
@@ -149,9 +246,14 @@ func (h *NGOHandler) GetApplication(c *gin.Context) {
 		RegistrationNumber     string     `json:"registration_number"`
 		RegistrationDocURL     string     `json:"registration_doc_url"`
 		TaxIDDocURL            string     `json:"tax_id_doc_url"`
-		ProofOfOperationDocURL string     `json:"proof_of_operation_doc_url"`
+		ProofOfOperationURL    string     `json:"proof_of_operation_url"`
 		Website                *string    `json:"website"`
 		Status                 string     `json:"status"`
+		AIVerdict              *string    `json:"ai_verdict"`
+		AIConfidenceScore      *float64   `json:"ai_confidence_score"`
+		AISummary              *string    `json:"ai_summary"`
+		AIEvidence             *string    `json:"ai_evidence"`
+		AIScreenedAt           *time.Time `json:"ai_screened_at"`
 		RejectionReason        *string    `json:"rejection_reason"`
 		ReviewedBy             *string    `json:"reviewed_by"`
 		ReviewedAt             *time.Time `json:"reviewed_at"`
@@ -160,7 +262,8 @@ func (h *NGOHandler) GetApplication(c *gin.Context) {
 	if err := row.Scan(
 		&app.ID, &app.NgoUserID, &app.OrganizationName, &app.Country,
 		&app.RegistrationNumber, &app.RegistrationDocURL, &app.TaxIDDocURL,
-		&app.ProofOfOperationDocURL, &app.Website, &app.Status,
+		&app.ProofOfOperationURL, &app.Website, &app.Status,
+		&app.AIVerdict, &app.AIConfidenceScore, &app.AISummary, &app.AIEvidence, &app.AIScreenedAt,
 		&app.RejectionReason, &app.ReviewedBy, &app.ReviewedAt, &app.CreatedAt,
 	); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "application not found"})
@@ -169,7 +272,8 @@ func (h *NGOHandler) GetApplication(c *gin.Context) {
 	c.JSON(http.StatusOK, app)
 }
 
-// Approve approves a pending NGO application, sets the initial trust score to 50, and enqueues the blockchain whitelist job.
+// Approve approves a pending NGO application, calls PoolFactory.addVerifiedNGO on-chain FIRST,
+// then sets the initial trust score to 50 in the DB.
 func (h *NGOHandler) Approve(c *gin.Context) {
 	appID := c.Param("id")
 	adminID, _ := c.Get("userID")
@@ -184,6 +288,32 @@ func (h *NGOHandler) Approve(c *gin.Context) {
 		return
 	}
 
+	// On-chain: PoolFactory.addVerifiedNGO(ngoWalletAddress) — BEFORE DB commit.
+	// If the chain call fails, we return an error without changing DB state.
+	var chainNote string
+	if h.bc != nil {
+		var walletAddr string
+		_ = h.db.QueryRow(context.Background(),
+			`SELECT wallet_address FROM users WHERE id = $1`, ngoUserID,
+		).Scan(&walletAddr)
+
+		if walletAddr == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "NGO has no wallet connected — cannot whitelist on-chain"})
+			return
+		}
+
+		txHash, err := h.bc.AddVerifiedNGO(context.Background(), common.HexToAddress(walletAddr))
+		if err != nil {
+			log.Printf("[blockchain] addVerifiedNGO failed for %s: %v", walletAddr, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "on-chain whitelist failed: " + err.Error()})
+			return
+		}
+		chainNote = "on-chain whitelist tx: " + txHash
+	} else {
+		chainNote = "blockchain not configured — on-chain whitelist skipped"
+	}
+
+	// Chain succeeded (or not configured) — now update DB.
 	tx, err := h.db.Begin(context.Background())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "tx begin failed"})
@@ -211,7 +341,7 @@ func (h *NGOHandler) Approve(c *gin.Context) {
 	}
 
 	_, err = tx.Exec(context.Background(),
-		`INSERT INTO trust_score_logs (ngo_id, previous_score, new_score, reason)
+		`INSERT INTO trust_score_logs (ngo_user_id, previous_score, new_score, reason)
 		 VALUES ($1, 0, 50, 'NGO application approved — initial score set')`,
 		ngoUserID,
 	)
@@ -225,11 +355,10 @@ func (h *NGOHandler) Approve(c *gin.Context) {
 		return
 	}
 
-	// TODO: trigger blockchain worker → PoolFactory.addVerifiedNGO(walletAddress)
 	c.JSON(http.StatusOK, gin.H{
 		"message":     "NGO approved",
 		"ngo_user_id": ngoUserID,
-		"note":        "blockchain whitelist job enqueued",
+		"note":        chainNote,
 	})
 }
 
@@ -257,4 +386,88 @@ func (h *NGOHandler) Reject(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "NGO rejected"})
+}
+
+// Dashboard returns the authenticated NGO's assigned pools, trust score, and recent proof submissions.
+func (h *NGOHandler) Dashboard(c *gin.Context) {
+	ngoID := c.GetString("userID")
+
+	var status string
+	err := h.db.QueryRow(context.Background(),
+		`SELECT status FROM ngo_applications WHERE ngo_user_id = $1 ORDER BY created_at DESC LIMIT 1`,
+		ngoID,
+	).Scan(&status)
+	if err != nil || status != "VERIFIED" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "NGO not verified"})
+		return
+	}
+
+	var trustScore float64
+	var flagged bool
+	_ = h.db.QueryRow(context.Background(),
+		`SELECT trust_score, flagged FROM users WHERE id = $1`,
+		ngoID,
+	).Scan(&trustScore, &flagged)
+
+	type Pool struct {
+		ID              string  `json:"id"`
+		Name            string  `json:"name"`
+		Region          string  `json:"region"`
+		ContractAddress string  `json:"contract_address"`
+		MaxPerClaim     float64 `json:"max_per_claim"`
+		Status          string  `json:"status"`
+	}
+	var pools []Pool
+	poolRows, _ := h.db.Query(context.Background(),
+		`SELECT cp.id, cp.name, cp.region, cp.contract_address, cp.max_per_claim, cp.status
+		 FROM pool_ngo_assignments pna
+		 JOIN crisis_pools cp ON cp.id = pna.pool_id
+		 WHERE pna.ngo_user_id = $1
+		 ORDER BY pna.assigned_at DESC`,
+		ngoID,
+	)
+	defer poolRows.Close()
+	for poolRows.Next() {
+		var p Pool
+		_ = poolRows.Scan(&p.ID, &p.Name, &p.Region, &p.ContractAddress, &p.MaxPerClaim, &p.Status)
+		pools = append(pools, p)
+	}
+
+	type Proof struct {
+		ID                 string    `json:"id"`
+		PoolID             string    `json:"pool_id"`
+		ClaimedAmount      float64   `json:"claimed_amount"`
+		VerificationStatus string    `json:"verification_status"`
+		VerificationScore  *float64  `json:"verification_score"`
+		CreatedAt          time.Time `json:"created_at"`
+	}
+	var proofs []Proof
+	proofRows, _ := h.db.Query(context.Background(),
+		`SELECT id, pool_id, claimed_amount, verification_status, verification_score, created_at
+		 FROM proof_submissions
+		 WHERE ngo_user_id = $1
+		 ORDER BY created_at DESC LIMIT 10`,
+		ngoID,
+	)
+	defer proofRows.Close()
+	for proofRows.Next() {
+		var p Proof
+		_ = proofRows.Scan(&p.ID, &p.PoolID, &p.ClaimedAmount, &p.VerificationStatus, &p.VerificationScore, &p.CreatedAt)
+		proofs = append(proofs, p)
+	}
+
+	// In case loops yield nil, return empty arrays so JSON is [] not null
+	if pools == nil {
+		pools = []Pool{}
+	}
+	if proofs == nil {
+		proofs = []Proof{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"trust_score":    trustScore,
+		"flagged":        flagged,
+		"assigned_pools": pools,
+		"recent_proofs":  proofs,
+	})
 }
