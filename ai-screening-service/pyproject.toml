@@ -1,6 +1,6 @@
 [project]
 name = "aidchain-ai-screening-service"
-version = "0.1.0"
+version = "0.2.0"
 description = "LangGraph-based AI pre-screening workflow for AidChain NGO applications."
 requires-python = ">=3.11"
 dependencies = [
@@ -8,11 +8,13 @@ dependencies = [
     "fastapi>=0.115.0",
     "httpx>=0.27.0",
     "langgraph>=0.2.60",
+    "langchain-openai>=0.3.0",
+    "langchain-core>=0.3.0",
     "pydantic>=2.8.0",
     "pypdf>=5.0.0",
+    "python-dotenv>=1.0.0",
     "uvicorn[standard]>=0.30.0",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-

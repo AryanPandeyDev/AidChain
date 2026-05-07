@@ -1,3 +1,9 @@
+"""
+LangGraph workflow for NGO application pre-screening.
+
+Pipeline:
+  intake → planning → [5 agents in parallel] → normalize → score → summary → result
+"""
 from __future__ import annotations
 
 import operator
@@ -27,26 +33,39 @@ class ScreeningState(TypedDict, total=False):
     result: dict[str, Any]
 
 
+# ── Nodes ────────────────────────────────────────────────────────────────────
+
+
 def intake_node(state: ScreeningState) -> ScreeningState:
+    """Validate and normalize input fields."""
     app = dict(state["application"])
-    missing = [
-        key
-        for key in ("application_id", "organization_name", "country", "registration_number", "registration_doc_url", "tax_id_doc_url", "proof_of_operation_doc_url")
-        if not app.get(key)
-    ]
+    required = (
+        "application_id", "organization_name", "country",
+        "registration_number", "registration_doc_url",
+        "tax_id_doc_url", "proof_of_operation_doc_url",
+    )
+    missing = [key for key in required if not app.get(key)]
+
     app["organization_name"] = app.get("organization_name", "").strip()
     app["country"] = app.get("country", "").strip()
     app["registration_number"] = app.get("registration_number", "").strip()
-    return {"application": app, "errors": [f"missing field: {field}" for field in missing]}
+
+    return {
+        "application": app,
+        "errors": [f"missing field: {field}" for field in missing],
+    }
 
 
 def planning_node(state: ScreeningState) -> ScreeningState:
+    """Decide which checks to run based on available data."""
     app = state["application"]
     checks = ["registry", "documents", "tax_id", "red_flags"]
     if app.get("website"):
         checks.append("website")
     return {"checks": checks}
 
+
+# ── Agent wrapper nodes (async) ──────────────────────────────────────────────
 
 async def registry_node(state: ScreeningState) -> ScreeningState:
     evidence, risks, errors = await registry_agent(state["application"], state.get("checks", []))
@@ -73,7 +92,10 @@ async def red_flag_node(state: ScreeningState) -> ScreeningState:
     return {"red_flags": evidence, "risk_signals": risks, "errors": errors}
 
 
+# ── Post-processing nodes ───────────────────────────────────────────────────
+
 def evidence_normalizer_node(state: ScreeningState) -> ScreeningState:
+    """Merge all agent outputs into a single evidence dict."""
     return {
         "evidence": {
             "registry": state.get("registry", {}),
@@ -86,12 +108,17 @@ def evidence_normalizer_node(state: ScreeningState) -> ScreeningState:
 
 
 def score_calculator_node(state: ScreeningState) -> ScreeningState:
-    score, verdict = calculate_score(state.get("evidence", {}), state.get("risk_signals", []))
+    """Deterministic score calculation — no LLM."""
+    score, verdict = calculate_score(
+        state.get("evidence", {}),
+        state.get("risk_signals", []),
+    )
     return {"score": score, "verdict": verdict}
 
 
-def summary_agent_node(state: ScreeningState) -> ScreeningState:
-    summary = generate_summary(
+async def summary_agent_node(state: ScreeningState) -> ScreeningState:
+    """LLM-generated summary for admin review (with template fallback)."""
+    summary = await generate_summary(
         state.get("evidence", {}),
         state.get("risk_signals", []),
         state.get("errors", []),
@@ -102,6 +129,7 @@ def summary_agent_node(state: ScreeningState) -> ScreeningState:
 
 
 def final_result_node(state: ScreeningState) -> ScreeningState:
+    """Package the final response."""
     app = state["application"]
     response = ScreeningResponse(
         application_id=app["application_id"],
@@ -117,8 +145,12 @@ def final_result_node(state: ScreeningState) -> ScreeningState:
     return {"result": response.model_dump()}
 
 
+# ── Graph assembly ───────────────────────────────────────────────────────────
+
 def build_graph():
     builder = StateGraph(ScreeningState)
+
+    # Add nodes
     builder.add_node("intake_node", intake_node)
     builder.add_node("planning_node", planning_node)
     builder.add_node("registry_agent", registry_node)
@@ -131,20 +163,30 @@ def build_graph():
     builder.add_node("summary_agent_node", summary_agent_node)
     builder.add_node("final_result_node", final_result_node)
 
+    # Edges: linear start
     builder.add_edge(START, "intake_node")
     builder.add_edge("intake_node", "planning_node")
+
+    # Fan-out: 5 agents run in parallel from planning
     builder.add_edge("planning_node", "registry_agent")
     builder.add_edge("planning_node", "website_agent")
     builder.add_edge("planning_node", "document_agent")
     builder.add_edge("planning_node", "tax_id_agent")
     builder.add_edge("planning_node", "red_flag_agent")
-    builder.add_edge(["registry_agent", "website_agent", "document_agent", "tax_id_agent", "red_flag_agent"], "evidence_normalizer_node")
+
+    # Fan-in: all agents merge into normalizer
+    builder.add_edge(
+        ["registry_agent", "website_agent", "document_agent", "tax_id_agent", "red_flag_agent"],
+        "evidence_normalizer_node",
+    )
+
+    # Linear finish
     builder.add_edge("evidence_normalizer_node", "score_calculator_node")
     builder.add_edge("score_calculator_node", "summary_agent_node")
     builder.add_edge("summary_agent_node", "final_result_node")
     builder.add_edge("final_result_node", END)
+
     return builder.compile()
 
 
 screening_graph = build_graph()
-
