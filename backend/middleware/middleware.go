@@ -1,54 +1,79 @@
 package middleware
 
 import (
+	"encoding/json"
+	"log"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
-	"time"
 
+	"github.com/clerk/clerk-sdk-go/v2"
+	clerkjwt "github.com/clerk/clerk-sdk-go/v2/jwt"
+	"github.com/clerk/clerk-sdk-go/v2/user"
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
 )
 
-// Claims holds the user identity fields embedded in every JWT.
-type Claims struct {
-	UserID string `json:"sub"`
-	Role   string `json:"role"`
-	jwt.RegisteredClaims
-}
-
-// jwtSecret reads the signing key from the environment on every call.
-// Avoids caching a zero-value secret when the binary starts before env is populated.
-func jwtSecret() []byte { return []byte(os.Getenv("JWT_SECRET")) }
-
-// JWT validates the Bearer token on every request and stores the parsed claims in context.
-func JWT() gin.HandlerFunc {
+// ClerkAuth verifies the Clerk session JWT from the Authorization header
+// and sets "userID" (our internal DB UUID) and "role" into the Gin context,
+// so all downstream handlers work without any changes.
+//
+// The flow:
+//   1. Extract Bearer token from Authorization header
+//   2. Verify JWT via Clerk SDK (uses JWKS auto-fetch/cache)
+//   3. Read the Clerk user's public metadata to get our DB user_id and role
+//   4. Set "userID" and "role" in gin.Context — same keys the old JWT() used
+func ClerkAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		header := c.GetHeader("Authorization")
 		if !strings.HasPrefix(header, "Bearer ") {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing bearer token"})
 			return
 		}
-		raw := strings.TrimPrefix(header, "Bearer ")
-		claims := &Claims{}
-		token, err := jwt.ParseWithClaims(raw, claims, func(t *jwt.Token) (any, error) {
-			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, jwt.ErrSignatureInvalid
-			}
-			return jwtSecret(), nil
+		sessionToken := strings.TrimPrefix(header, "Bearer ")
+
+		// Verify the Clerk session JWT.
+		claims, err := clerkjwt.Verify(c.Request.Context(), &clerkjwt.VerifyParams{
+			Token: sessionToken,
 		})
-		if err != nil || !token.Valid {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid session token"})
 			return
 		}
-		c.Set("userID", claims.UserID)
-		c.Set("role", claims.Role)
+
+		// claims.Subject is the Clerk user ID (e.g., "user_2x...").
+		clerkUserID := claims.Subject
+
+		// Fetch the Clerk user to read public metadata (contains our db_user_id and role).
+		clerkUser, err := user.Get(c.Request.Context(), clerkUserID)
+		if err != nil {
+			log.Printf("[clerk] failed to fetch user %s: %v", clerkUserID, err)
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "failed to resolve user"})
+			return
+		}
+
+		// Public metadata is set during webhook sync or via Clerk dashboard.
+		// Expected shape: { "db_user_id": "uuid", "role": "DONOR|NGO|ADMIN" }
+		var meta map[string]any
+		if err := json.Unmarshal(clerkUser.PublicMetadata, &meta); err != nil {
+			meta = make(map[string]any)
+		}
+		dbUserID, _ := meta["db_user_id"].(string)
+		role, _ := meta["role"].(string)
+
+		if dbUserID == "" || role == "" {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "user not provisioned — please complete onboarding"})
+			return
+		}
+
+		// Set the same context keys that every handler already reads.
+		c.Set("userID", dbUserID)
+		c.Set("role", role)
+		c.Set("clerkUserID", clerkUserID)
 		c.Next()
 	}
 }
 
-// Role blocks requests whose JWT role does not match the required role.
+// Role blocks requests whose role does not match the required role.
 func Role(required string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		role, _ := c.Get("role")
@@ -72,22 +97,13 @@ func InternalSecret() gin.HandlerFunc {
 	}
 }
 
-// IssueToken signs and returns a JWT for the given user ID and role.
-// Token expiry is read from JWT_EXPIRY_HOURS env var, defaulting to 24 hours.
-func IssueToken(userID, role string) (string, error) {
-	hours := 24
-	if v := os.Getenv("JWT_EXPIRY_HOURS"); v != "" {
-		if h, err := strconv.Atoi(v); err == nil && h > 0 {
-			hours = h
-		}
+// InitClerk must be called once at startup to set the Clerk secret key.
+func InitClerk() {
+	key := os.Getenv("CLERK_SECRET_KEY")
+	if key == "" {
+		log.Println("[clerk] WARNING: CLERK_SECRET_KEY not set — auth will fail")
+		return
 	}
-	claims := &Claims{
-		UserID: userID,
-		Role:   role,
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(hours) * time.Hour)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-		},
-	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(jwtSecret())
+	clerk.SetKey(key)
+	log.Println("[clerk] initialized")
 }

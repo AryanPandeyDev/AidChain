@@ -17,6 +17,9 @@ import (
 func main() {
 	_ = godotenv.Load()
 
+	// Initialize Clerk before anything else.
+	middleware.InitClerk()
+
 	pool, err := db.Connect(os.Getenv("DATABASE_URL"))
 	if err != nil {
 		log.Fatalf("db connect: %v", err)
@@ -36,22 +39,21 @@ func main() {
 	r := gin.Default()
 
 	// ── public routes ─────────────────────────────────────────────────────────
-	auth := r.Group("/api/auth")
-	{
-		h := handlers.NewAuthHandler(pool)
-		auth.POST("/register", h.Register)
-		auth.POST("/login", h.Login)
-	}
+
+	// Clerk webhook — receives user.created / user.updated events.
+	// Must be public (Clerk calls it directly, authenticated via Svix signature).
+	webhookH := handlers.NewAuthHandler(pool)
+	r.POST("/api/webhooks/clerk", webhookH.ClerkWebhook)
 
 	// Public pool listing (no auth required per PRD §4.3).
 	poolH := handlers.NewPoolHandler(pool, bc)
 	r.GET("/api/pools", poolH.ListPools)
 	r.GET("/api/pools/:id", poolH.GetPool)
 
-	// ── authenticated routes ──────────────────────────────────────────────────
-	api := r.Group("/api", middleware.JWT())
+	// ── authenticated routes (Clerk session JWT) ──────────────────────────────
+	api := r.Group("/api", middleware.ClerkAuth())
 
-	// connect wallet (requires JWT)
+	// connect wallet (requires auth)
 	ah := handlers.NewAuthHandler(pool)
 	api.POST("/auth/connect-wallet", ah.ConnectWallet)
 
