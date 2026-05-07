@@ -34,23 +34,22 @@ export async function apiFetch(path, options = {}) {
 }
 
 /**
- * Retrieve the Clerk session token.
- * Uses the global Clerk instance injected by ClerkProvider.
+ * Retrieve the Clerk session token — always fresh.
+ * Clerk's getToken() returns a cached token if still valid (>10s remaining)
+ * and silently refreshes it otherwise. Never use a stale cached value.
  */
 async function getSessionToken() {
-  // window.__clerk_session_token is set by our AuthProvider for convenience
-  if (window.__clerk_session_token) return window.__clerk_session_token;
-
-  // Fallback: try Clerk's global
+  // Prefer Clerk's live session — it auto-refreshes before expiry.
   if (window.Clerk?.session) {
     try {
       return await window.Clerk.session.getToken();
     } catch {
-      return null;
+      // fall through
     }
   }
 
-  return null;
+  // Last resort: cached token set by AuthProvider (may be up to 50s old).
+  return window.__clerk_session_token || null;
 }
 
 export { API_BASE };

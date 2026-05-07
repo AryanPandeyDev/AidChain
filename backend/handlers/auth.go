@@ -270,3 +270,83 @@ func (h *AuthHandler) handleUserSync(c *gin.Context, data json.RawMessage) {
 	log.Printf("[clerk-webhook] synced user %s → db_user_id=%s role=%s", clerkUser.ID, dbUserID, role)
 	c.JSON(http.StatusOK, gin.H{"status": "synced", "db_user_id": dbUserID, "role": role})
 }
+
+// DevProvision is a development-only handler that manually syncs a Clerk user
+// to the local database without requiring a Svix webhook signature.
+//
+// POST /api/dev/provision
+//
+//	{ "clerk_user_id": "user_2x...", "role": "DONOR|NGO|ADMIN" }
+func (h *AuthHandler) DevProvision(c *gin.Context) {
+	var body struct {
+		ClerkUserID string `json:"clerk_user_id" binding:"required"`
+		Role        string `json:"role"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Default to DONOR if not specified.
+	role := body.Role
+	switch role {
+	case "DONOR", "NGO", "ADMIN":
+	default:
+		role = "DONOR"
+	}
+
+	// Fetch the real Clerk user to get their email and name.
+	clerkUser, err := user.Get(c.Request.Context(), body.ClerkUserID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "clerk user not found: " + err.Error()})
+		return
+	}
+
+	email := ""
+	for _, e := range clerkUser.EmailAddresses {
+		if e.EmailAddress != "" {
+			email = strings.ToLower(e.EmailAddress)
+			break
+		}
+	}
+	if email == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "clerk user has no email"})
+		return
+	}
+
+	name := "User"
+	if clerkUser.FirstName != nil && *clerkUser.FirstName != "" {
+		name = *clerkUser.FirstName
+		if clerkUser.LastName != nil {
+			name += " " + *clerkUser.LastName
+		}
+	}
+
+	// Upsert in DB.
+	var dbUserID string
+	err = h.db.QueryRow(context.Background(),
+		`INSERT INTO users (clerk_id, email, name, role)
+		 VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (clerk_id) DO UPDATE SET email=EXCLUDED.email, name=EXCLUDED.name, role=$4
+		 RETURNING id`,
+		body.ClerkUserID, email, name, role,
+	).Scan(&dbUserID)
+	if err != nil {
+		log.Printf("[dev-provision] upsert failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db upsert failed: " + err.Error()})
+		return
+	}
+
+	// Write db_user_id + role back to Clerk public metadata.
+	meta := map[string]any{"db_user_id": dbUserID, "role": role}
+	metaJSON, _ := json.Marshal(meta)
+	if _, err = user.Update(c.Request.Context(), body.ClerkUserID, &user.UpdateParams{
+		PublicMetadata: clerk.JSONRawMessage(metaJSON),
+	}); err != nil {
+		log.Printf("[dev-provision] metadata update failed: %v", err)
+		// Non-fatal — DB is updated; metadata can be retried.
+	}
+
+	log.Printf("[dev-provision] provisioned %s → db_user_id=%s role=%s", body.ClerkUserID, dbUserID, role)
+	c.JSON(http.StatusOK, gin.H{"status": "provisioned", "db_user_id": dbUserID, "role": role, "email": email})
+}

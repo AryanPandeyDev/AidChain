@@ -48,7 +48,7 @@ export default function Sidebar({ active = "dashboard", role = "Donor", userName
       {/* Donate Button */}
       <div className="px-3 mb-2">
         <a
-          href="#donate"
+          href="#/pools"
           className={`flex items-center justify-center gap-2 py-3 bg-secondary text-on-secondary rounded-full font-bold text-sm active:scale-95 transition-transform ${
             collapsed ? "px-2" : "px-4"
           }`}

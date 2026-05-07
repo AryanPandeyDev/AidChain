@@ -20,13 +20,13 @@ export default function Hero() {
           </p>
           <div className="flex flex-wrap gap-sm">
             <a
-              href="#projects"
+              href="#/pools"
               className="px-8 py-4 bg-primary text-on-primary rounded-full text-base font-bold active:scale-95 transition-transform hover:bg-primary-container"
             >
               Start Donating
             </a>
             <a
-              href="#methodology"
+              href="#/ngo/apply"
               className="px-8 py-4 border-2 border-primary text-primary rounded-full text-base font-bold active:scale-95 transition-transform hover:bg-primary hover:text-on-primary"
             >
               Become a Partner

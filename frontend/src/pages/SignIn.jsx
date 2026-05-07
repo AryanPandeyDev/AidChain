@@ -1,16 +1,43 @@
 import { useState } from "react";
+import { useSignIn } from "@clerk/clerk-react";
 
 export default function SignIn() {
+  const { signIn, setActive, isLoaded } = useSignIn();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!isLoaded) return;
     setLoading(true);
-    // Clerk auth will replace this
-    setTimeout(() => setLoading(false), 1500);
+    setError("");
+    try {
+      const result = await signIn.create({ identifier: email, password });
+      if (result.status === "complete") {
+        await setActive({ session: result.createdSessionId });
+        window.location.hash = "#/dashboard";
+      }
+    } catch (err) {
+      setError(err.errors?.[0]?.longMessage || err.message || "Sign in failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGoogle = async () => {
+    if (!isLoaded) return;
+    try {
+      await signIn.authenticateWithRedirect({
+        strategy: "oauth_google",
+        redirectUrl: window.location.origin + "/#/sso-callback",
+        redirectUrlComplete: window.location.origin + "/#/dashboard",
+      });
+    } catch (err) {
+      setError(err.errors?.[0]?.longMessage || "Google sign in failed");
+    }
   };
 
   return (
@@ -18,27 +45,15 @@ export default function SignIn() {
       <div className="w-full max-w-[920px] grid grid-cols-1 lg:grid-cols-2 rounded-3xl overflow-hidden shadow-lg shadow-primary/5">
         {/* ── Left Panel: Hero ── */}
         <div className="relative hidden lg:flex flex-col justify-end p-10 min-h-[640px]">
-          {/* Background: screenshot of the landing page with overlay */}
-          <div className="absolute inset-0">
-            <img
-              src="https://lh3.googleusercontent.com/aida-public/AB6AXuAM20L69Ul128x7icOKFVHlVcLOMVbzUOHh_GBoeiGKM-hbyOPboDnJPeLIJs3NP9GVuTyCfMyLIFLsj4tJ2fhzRYUDpb1zTx5-zWbLujXWP-C1zXtsnh5hBg4HfKtWkAlR2TuenwqwGxY-6KEaF8FqClfAxT6u6Z-e4eYUh9HSSPcmtR7YO_uShEhqI_-7SpTvF4aS_YoiX97TShRLAvCUQ6zC8kYW40PghtOCp6xplTbpnRf1p-sgi34f8eFWTuL4qsmsWjbgeFk"
-              alt="AidChain platform preview"
-              className="w-full h-full object-cover"
-            />
-            {/* Dark green overlay */}
-            <div className="absolute inset-0 bg-primary-container/85"></div>
-          </div>
+          <div className="absolute inset-0 bg-primary-container"></div>
 
-          {/* Logo */}
           <div className="absolute top-10 left-10 z-10">
-            <span className="text-3xl font-extrabold text-on-primary tracking-tight">
+            <a href="#/" className="text-3xl font-extrabold text-on-primary tracking-tight">
               AidChain
-            </span>
+            </a>
           </div>
 
-          {/* Bottom tagline */}
           <div className="relative z-10">
-            {/* Mustard brush-stroke accent */}
             <div className="w-24 h-1 bg-secondary-container rounded-full mb-4"></div>
             <h2 className="text-3xl font-extrabold text-on-primary leading-tight mb-3">
               Empowerment through
@@ -55,9 +70,8 @@ export default function SignIn() {
 
         {/* ── Right Panel: Sign In Form ── */}
         <div className="bg-surface-container-lowest flex flex-col justify-center px-10 py-14 lg:px-14">
-          {/* Mobile logo */}
           <div className="lg:hidden text-2xl font-extrabold text-primary mb-8">
-            AidChain
+            <a href="#/">AidChain</a>
           </div>
 
           <h1 className="text-3xl font-extrabold text-primary text-center mb-1">
@@ -67,8 +81,13 @@ export default function SignIn() {
             Sign in to continue your impact journey
           </p>
 
+          {error && (
+            <div className="bg-error-container border border-error rounded-xl px-4 py-3 mb-6">
+              <p className="text-sm text-on-error-container">{error}</p>
+            </div>
+          )}
+
           <form onSubmit={handleSubmit} className="space-y-6">
-            {/* Email Field */}
             <div>
               <label className="block text-sm font-bold text-on-surface uppercase tracking-widest mb-2">
                 Email
@@ -83,7 +102,6 @@ export default function SignIn() {
               />
             </div>
 
-            {/* Password Field */}
             <div>
               <div className="flex justify-between items-center mb-2">
                 <label className="block text-sm font-bold text-on-surface uppercase tracking-widest">
@@ -116,7 +134,6 @@ export default function SignIn() {
               </div>
             </div>
 
-            {/* Sign In Button */}
             <button
               type="submit"
               disabled={loading}
@@ -144,7 +161,10 @@ export default function SignIn() {
           </div>
 
           {/* Google Sign In */}
-          <button className="w-full py-3 border border-outline-variant rounded-full flex items-center justify-center gap-3 text-on-surface font-bold hover:bg-surface-container-low transition-colors active:scale-[0.98]">
+          <button
+            onClick={handleGoogle}
+            className="w-full py-3 border border-outline-variant rounded-full flex items-center justify-center gap-3 text-on-surface font-bold hover:bg-surface-container-low transition-colors active:scale-[0.98]"
+          >
             <svg width="18" height="18" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg">
               <path d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844a4.14 4.14 0 01-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.875 2.684-6.615z" fill="#4285F4"/>
               <path d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 009 18z" fill="#34A853"/>
@@ -158,7 +178,7 @@ export default function SignIn() {
           <p className="text-center text-on-surface-variant mt-8">
             New to AidChain?{" "}
             <a
-              href="/register"
+              href="#/register"
               className="font-bold text-secondary hover:underline"
             >
               Create an account

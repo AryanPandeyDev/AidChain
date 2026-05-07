@@ -47,10 +47,43 @@ function TokenSync({ children }) {
   }, [isSignedIn, getToken]);
 
   useEffect(() => {
-    if (user?.publicMetadata) {
-      setRole(user.publicMetadata.role || "DONOR");
-      setDbUserId(user.publicMetadata.db_user_id || null);
+    if (!user) return;
+    const meta = user.publicMetadata || {};
+    const existingDbId = meta.db_user_id;
+    const existingRole = meta.role;
+
+    if (existingDbId && existingRole) {
+      // Already provisioned — just set local state.
+      setRole(existingRole);
+      setDbUserId(existingDbId);
+      return;
     }
+
+    // Not provisioned yet — call the dev endpoint to sync this user.
+    const provision = async () => {
+      try {
+        const token = await getToken();
+        const res = await fetch(
+          `${import.meta.env.VITE_API_BASE_URL || "http://localhost:8080"}/api/dev/provision`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ clerk_user_id: user.id, role: user.unsafeMetadata?.role || "DONOR" }),
+          }
+        );
+        if (res.ok) {
+          const data = await res.json();
+          setRole(data.role);
+          setDbUserId(data.db_user_id);
+          // Reload the Clerk user so publicMetadata updates propagate.
+          await user.reload();
+        }
+      } catch (err) {
+        console.error("[AidChain] auto-provision failed:", err);
+      }
+    };
+    provision();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
   return (

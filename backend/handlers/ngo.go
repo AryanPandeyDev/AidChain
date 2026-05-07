@@ -31,10 +31,11 @@ type applyBody struct {
 	OrganizationName    string `json:"organization_name"        binding:"required"`
 	Country             string `json:"country"                  binding:"required"`
 	RegistrationNumber  string `json:"registration_number"      binding:"required"`
-	RegistrationDocURL  string `json:"registration_doc_url"     binding:"required,url"`
-	TaxIDDocURL         string `json:"tax_id_doc_url"           binding:"required,url"`
-	ProofOfOperationURL string `json:"proof_of_operation_url"   binding:"required,url"`
+	RegistrationDocURL  string `json:"registration_doc_url"     binding:"required"`
+	TaxIDDocURL         string `json:"tax_id_doc_url"           binding:"required"`
+	ProofOfOperationURL string `json:"proof_of_operation_url"   binding:"required"`
 	Website             string `json:"website"`
+	Description         string `json:"description"`
 }
 
 // Apply submits a new NGO application and triggers asynchronous AI pre-screening.

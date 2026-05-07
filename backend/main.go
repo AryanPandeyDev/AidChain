@@ -62,6 +62,12 @@ func main() {
 	webhookH := handlers.NewAuthHandler(pool)
 	r.POST("/api/webhooks/clerk", webhookH.ClerkWebhook)
 
+	// ── dev-only: provision a Clerk user without a webhook ────────────────────
+	// Only registered when GIN_MODE != release, so it is never exposed in prod.
+	if gin.Mode() != gin.ReleaseMode {
+		r.POST("/api/dev/provision", webhookH.DevProvision)
+	}
+
 	// Public pool listing (no auth required per PRD §4.3).
 	poolH := handlers.NewPoolHandler(pool, bc)
 	r.GET("/api/pools", poolH.ListPools)
