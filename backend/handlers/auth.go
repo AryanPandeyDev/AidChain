@@ -29,7 +29,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		Email    string `json:"email"    binding:"required,email"`
 		Password string `json:"password" binding:"required,min=8"`
 		Name     string `json:"name"     binding:"required"`
-		Role     string `json:"role"     binding:"required,oneof=DONOR NGO ADMIN"`
+		Role     string `json:"role"     binding:"required,oneof=DONOR NGO"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})

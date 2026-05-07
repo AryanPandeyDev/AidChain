@@ -9,15 +9,23 @@ import (
 	"os"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"aidchain/blockchain"
 )
 
 // NGOHandler handles NGO application submission and admin review.
-type NGOHandler struct{ db *pgxpool.Pool }
+type NGOHandler struct {
+	db *pgxpool.Pool
+	bc *blockchain.Client
+}
 
-// NewNGOHandler returns an NGOHandler backed by the given connection pool.
-func NewNGOHandler(db *pgxpool.Pool) *NGOHandler { return &NGOHandler{db: db} }
+// NewNGOHandler returns an NGOHandler backed by the given connection pool and optional blockchain client.
+func NewNGOHandler(db *pgxpool.Pool, bc *blockchain.Client) *NGOHandler {
+	return &NGOHandler{db: db, bc: bc}
+}
 
 type applyBody struct {
 	OrganizationName    string `json:"organization_name"        binding:"required"`
@@ -249,7 +257,8 @@ func (h *NGOHandler) GetApplication(c *gin.Context) {
 	c.JSON(http.StatusOK, app)
 }
 
-// Approve approves a pending NGO application, sets the initial trust score to 50, and enqueues the blockchain whitelist job.
+// Approve approves a pending NGO application, sets the initial trust score to 50,
+// and calls PoolFactory.addVerifiedNGO on-chain.
 func (h *NGOHandler) Approve(c *gin.Context) {
 	appID := c.Param("id")
 	adminID, _ := c.Get("userID")
@@ -305,11 +314,33 @@ func (h *NGOHandler) Approve(c *gin.Context) {
 		return
 	}
 
-	// TODO: trigger blockchain worker → PoolFactory.addVerifiedNGO(walletAddress)
+	// On-chain: PoolFactory.addVerifiedNGO(ngoWalletAddress)
+	var chainNote string
+	if h.bc != nil {
+		var walletAddr string
+		_ = h.db.QueryRow(context.Background(),
+			`SELECT wallet_address FROM users WHERE id = $1`, ngoUserID,
+		).Scan(&walletAddr)
+
+		if walletAddr != "" {
+			txHash, err := h.bc.AddVerifiedNGO(context.Background(), common.HexToAddress(walletAddr))
+			if err != nil {
+				log.Printf("[blockchain] addVerifiedNGO failed for %s: %v", walletAddr, err)
+				chainNote = "on-chain whitelist failed: " + err.Error()
+			} else {
+				chainNote = "on-chain whitelist tx: " + txHash
+			}
+		} else {
+			chainNote = "NGO has no wallet connected — on-chain whitelist skipped"
+		}
+	} else {
+		chainNote = "blockchain not configured — on-chain whitelist skipped"
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"message":     "NGO approved",
 		"ngo_user_id": ngoUserID,
-		"note":        "blockchain whitelist job enqueued",
+		"note":        chainNote,
 	})
 }
 

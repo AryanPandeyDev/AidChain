@@ -2,18 +2,27 @@ package handlers
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"aidchain/blockchain"
 )
 
 // PoolHandler handles crisis pool listing, detail retrieval, creation, and NGO assignment.
-type PoolHandler struct{ db *pgxpool.Pool }
+type PoolHandler struct {
+	db *pgxpool.Pool
+	bc *blockchain.Client
+}
 
-// NewPoolHandler returns a PoolHandler backed by the given connection pool.
-func NewPoolHandler(db *pgxpool.Pool) *PoolHandler { return &PoolHandler{db: db} }
+// NewPoolHandler returns a PoolHandler backed by the given connection pool and optional blockchain client.
+func NewPoolHandler(db *pgxpool.Pool, bc *blockchain.Client) *PoolHandler {
+	return &PoolHandler{db: db, bc: bc}
+}
 
 // ListPools returns all active crisis pools ordered by creation time descending.
 func (h *PoolHandler) ListPools(c *gin.Context) {
@@ -127,7 +136,8 @@ func fetchNGOsForPool(ctx context.Context, db *pgxpool.Pool, poolID string) []ng
 	return result
 }
 
-// CreatePool inserts a new crisis pool record after the admin has already deployed the contract on-chain.
+// CreatePool deploys a CrisisPool on-chain via PoolFactory.deployPool() and saves the metadata to DB.
+// If blockchain is not configured, it accepts contract_address from the request body (MVP fallback).
 func (h *PoolHandler) CreatePool(c *gin.Context) {
 	adminID, _ := c.Get("userID")
 
@@ -139,13 +149,33 @@ func (h *PoolHandler) CreatePool(c *gin.Context) {
 		RegionLng        float64 `json:"region_lng"         binding:"required"`
 		RegionRadiusKm   float64 `json:"region_radius_km"   binding:"required,gt=0"`
 		TargetAmount     float64 `json:"target_amount"      binding:"required,gt=0"`
-		ContractAddress  string  `json:"contract_address"   binding:"required"`
+		ContractAddress  string  `json:"contract_address"`
 		MaxPerClaim      float64 `json:"max_per_claim"      binding:"required,gt=0"`
 		MaxPerNGOPerDay  float64 `json:"max_per_ngo_per_day" binding:"required,gt=0"`
 		MaxPerNGOPool    float64 `json:"max_per_ngo_pool"   binding:"required,gt=0"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	contractAddress := body.ContractAddress
+
+	// If blockchain is configured, deploy the pool on-chain and use the returned address.
+	if h.bc != nil {
+		maxPerClaim := blockchain.USDCToOnChain(body.MaxPerClaim)
+		maxPerNGOPerDay := blockchain.USDCToOnChain(body.MaxPerNGOPerDay)
+		maxPerNGOPool := blockchain.USDCToOnChain(body.MaxPerNGOPool)
+
+		poolAddr, txHash, err := h.bc.DeployPool(context.Background(), maxPerClaim, maxPerNGOPerDay, maxPerNGOPool)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "on-chain deployPool failed: " + err.Error()})
+			return
+		}
+		contractAddress = poolAddr.Hex()
+		log.Printf("[blockchain] pool deployed at %s (tx: %s)", contractAddress, txHash)
+	} else if contractAddress == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "contract_address is required when blockchain is not configured"})
 		return
 	}
 
@@ -160,7 +190,7 @@ func (h *PoolHandler) CreatePool(c *gin.Context) {
 		 RETURNING id`,
 		body.Name, body.Description, body.Region,
 		body.RegionLat, body.RegionLng, body.RegionRadiusKm,
-		body.TargetAmount, body.ContractAddress,
+		body.TargetAmount, contractAddress,
 		body.MaxPerClaim, body.MaxPerNGOPerDay, body.MaxPerNGOPool,
 		adminID,
 	).Scan(&poolID)
@@ -168,10 +198,10 @@ func (h *PoolHandler) CreatePool(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "pool creation failed: " + err.Error()})
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"pool_id": poolID})
+	c.JSON(http.StatusCreated, gin.H{"pool_id": poolID, "contract_address": contractAddress})
 }
 
-// PausePool sets the pool's donations_paused flag to true in the database and enqueues the on-chain pause call.
+// PausePool calls CrisisPool.pauseDonations() on-chain and updates the DB.
 func (h *PoolHandler) PausePool(c *gin.Context) {
 	poolID := c.Param("id")
 
@@ -185,6 +215,20 @@ func (h *PoolHandler) PausePool(c *gin.Context) {
 		return
 	}
 
+	// On-chain call
+	var chainNote string
+	if h.bc != nil {
+		txHash, err := h.bc.PauseDonations(context.Background(), common.HexToAddress(contractAddress))
+		if err != nil {
+			log.Printf("[blockchain] pauseDonations failed for pool %s: %v", poolID, err)
+			chainNote = "on-chain pause failed: " + err.Error()
+		} else {
+			chainNote = "on-chain pause tx: " + txHash
+		}
+	} else {
+		chainNote = "blockchain not configured — on-chain pause skipped"
+	}
+
 	_, err = h.db.Exec(context.Background(),
 		`UPDATE crisis_pools SET donations_paused=true WHERE id=$1`,
 		poolID,
@@ -194,14 +238,10 @@ func (h *PoolHandler) PausePool(c *gin.Context) {
 		return
 	}
 
-	// TODO: blockchain.PauseDonations(ctx, contractAddress)
-	c.JSON(http.StatusOK, gin.H{
-		"message": "pool donations paused",
-		"note":    "on-chain pauseDonations call pending blockchain integration",
-	})
+	c.JSON(http.StatusOK, gin.H{"message": "pool donations paused", "note": chainNote})
 }
 
-// ResumePool sets the pool's donations_paused flag to false in the database and enqueues the on-chain resume call.
+// ResumePool calls CrisisPool.resumeDonations() on-chain and updates the DB.
 func (h *PoolHandler) ResumePool(c *gin.Context) {
 	poolID := c.Param("id")
 
@@ -215,6 +255,20 @@ func (h *PoolHandler) ResumePool(c *gin.Context) {
 		return
 	}
 
+	// On-chain call
+	var chainNote string
+	if h.bc != nil {
+		txHash, err := h.bc.ResumeDonations(context.Background(), common.HexToAddress(contractAddress))
+		if err != nil {
+			log.Printf("[blockchain] resumeDonations failed for pool %s: %v", poolID, err)
+			chainNote = "on-chain resume failed: " + err.Error()
+		} else {
+			chainNote = "on-chain resume tx: " + txHash
+		}
+	} else {
+		chainNote = "blockchain not configured — on-chain resume skipped"
+	}
+
 	_, err = h.db.Exec(context.Background(),
 		`UPDATE crisis_pools SET donations_paused=false WHERE id=$1`,
 		poolID,
@@ -224,9 +278,5 @@ func (h *PoolHandler) ResumePool(c *gin.Context) {
 		return
 	}
 
-	// TODO: blockchain.ResumeDonations(ctx, contractAddress)
-	c.JSON(http.StatusOK, gin.H{
-		"message": "pool donations resumed",
-		"note":    "on-chain resumeDonations call pending blockchain integration",
-	})
+	c.JSON(http.StatusOK, gin.H{"message": "pool donations resumed", "note": chainNote})
 }

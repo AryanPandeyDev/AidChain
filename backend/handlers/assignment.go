@@ -2,17 +2,26 @@ package handlers
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"aidchain/blockchain"
 )
 
-type AssignmentHandler struct{ db *pgxpool.Pool }
+// AssignmentHandler handles NGO pool assignment requests and admin review.
+type AssignmentHandler struct {
+	db *pgxpool.Pool
+	bc *blockchain.Client
+}
 
-func NewAssignmentHandler(db *pgxpool.Pool) *AssignmentHandler {
-	return &AssignmentHandler{db: db}
+// NewAssignmentHandler returns an AssignmentHandler backed by the given pool and optional blockchain client.
+func NewAssignmentHandler(db *pgxpool.Pool, bc *blockchain.Client) *AssignmentHandler {
+	return &AssignmentHandler{db: db, bc: bc}
 }
 
 // RequestAssignment submits an NGO's request to be assigned to a crisis pool.
@@ -160,7 +169,8 @@ func (h *AssignmentHandler) ListPoolAssignmentRequests(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"requests": requests, "count": len(requests)})
 }
 
-// ApproveAssignmentRequest approves an NGO pool assignment request and creates the assignment record.
+// ApproveAssignmentRequest approves an NGO pool assignment request, creates the DB assignment,
+// and calls CrisisPool.assignNGO() on-chain.
 func (h *AssignmentHandler) ApproveAssignmentRequest(c *gin.Context) {
 	adminID := c.GetString("userID")
 	poolID := c.Param("id")
@@ -207,10 +217,36 @@ func (h *AssignmentHandler) ApproveAssignmentRequest(c *gin.Context) {
 		return
 	}
 
-	// TODO: blockchain.AssignNGO(ctx, poolContractAddress, ngoWalletAddress)
+	// On-chain: CrisisPool.assignNGO(ngoWalletAddress)
+	var chainNote string
+	if h.bc != nil {
+		var contractAddress, walletAddr string
+		_ = h.db.QueryRow(context.Background(),
+			`SELECT contract_address FROM crisis_pools WHERE id = $1`, poolID,
+		).Scan(&contractAddress)
+		_ = h.db.QueryRow(context.Background(),
+			`SELECT wallet_address FROM users WHERE id = $1`, ngoUserID,
+		).Scan(&walletAddr)
+
+		if contractAddress != "" && walletAddr != "" {
+			txHash, err := h.bc.AssignNGO(context.Background(),
+				common.HexToAddress(contractAddress), common.HexToAddress(walletAddr))
+			if err != nil {
+				log.Printf("[blockchain] assignNGO failed for pool %s ngo %s: %v", poolID, ngoUserID, err)
+				chainNote = "on-chain assignNGO failed: " + err.Error()
+			} else {
+				chainNote = "on-chain assignNGO tx: " + txHash
+			}
+		} else {
+			chainNote = "missing contract_address or wallet — on-chain assignNGO skipped"
+		}
+	} else {
+		chainNote = "blockchain not configured — on-chain assignNGO skipped"
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"message": "request approved, NGO assigned to pool",
-		"note":    "on-chain assignNGO call pending blockchain integration",
+		"note":    chainNote,
 	})
 }
 

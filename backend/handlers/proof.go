@@ -3,21 +3,30 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"aidchain/blockchain"
 )
 
 // ProofHandler handles proof submission and retrieval for NGO field workers.
-type ProofHandler struct{ db *pgxpool.Pool }
+type ProofHandler struct {
+	db *pgxpool.Pool
+	bc *blockchain.Client
+}
 
-// NewProofHandler returns a ProofHandler backed by the given connection pool.
-func NewProofHandler(db *pgxpool.Pool) *ProofHandler { return &ProofHandler{db: db} }
+// NewProofHandler returns a ProofHandler backed by the given connection pool and optional blockchain client.
+func NewProofHandler(db *pgxpool.Pool, bc *blockchain.Client) *ProofHandler {
+	return &ProofHandler{db: db, bc: bc}
+}
 
 // haversineKm computes the great-circle distance in kilometres between two GPS coordinates.
 func haversineKm(lat1, lng1, lat2, lng2 float64) float64 {
@@ -31,9 +40,6 @@ func haversineKm(lat1, lng1, lat2, lng2 float64) float64 {
 }
 
 // verifyProof computes the three-signal verification score for a proof submission.
-//
-// Signal weights: OCR match 40%, location plausibility 30%, historical approval rate 30%.
-// Returns a score in [0.0, 1.0] and true if the score is >= 0.6.
 func verifyProof(
 	ocrAmount, claimedAmount float64,
 	lat, lng float64,
@@ -54,7 +60,6 @@ func verifyProof(
 		locationScore = 1.0
 	}
 
-	// New NGOs with no history receive a neutral 0.5 score to avoid penalising first submissions.
 	historicalScore := 0.5
 	if totalSubs > 0 {
 		historicalScore = float64(verifiedSubs) / float64(totalSubs)
@@ -66,14 +71,14 @@ func verifyProof(
 }
 
 // generateProofID derives a deterministic bytes32 proof identifier from the submission UUID.
-func generateProofID(submissionID string) ([32]byte, error) {
+func generateProofID(submissionID string) [32]byte {
 	h := crypto.Keccak256Hash(
 		[]byte(submissionID),
 		[]byte(strconv.FormatInt(time.Now().UnixNano(), 10)),
 	)
 	var result [32]byte
 	copy(result[:], h.Bytes())
-	return result, nil
+	return result
 }
 
 func min100(v float64) float64 {
@@ -90,14 +95,14 @@ func max0(v float64) float64 {
 	return v
 }
 
-// fetchTrustScore returns the current trust score for an NGO user, defaulting to 0 on error.
 func fetchTrustScore(ctx context.Context, db *pgxpool.Pool, ngoID string) float64 {
 	var score float64
 	_ = db.QueryRow(ctx, `SELECT trust_score FROM users WHERE id = $1`, ngoID).Scan(&score)
 	return score
 }
 
-// SubmitProof persists an NGO proof submission, runs three-signal verification, and triggers fund release on approval.
+// SubmitProof persists an NGO proof submission, runs three-signal verification,
+// and triggers fund release on-chain if approved.
 func (h *ProofHandler) SubmitProof(c *gin.Context) {
 	ngoID := c.GetString("userID")
 	if ngoID == "" {
@@ -130,8 +135,16 @@ func (h *ProofHandler) SubmitProof(c *gin.Context) {
 		return
 	}
 
+	// Use a transaction with SELECT ... FOR UPDATE to prevent double-processing.
+	tx, err := h.db.Begin(context.Background())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "tx begin failed"})
+		return
+	}
+	defer tx.Rollback(context.Background())
+
 	var proofID string
-	err := h.db.QueryRow(context.Background(),
+	err = tx.QueryRow(context.Background(),
 		`INSERT INTO proof_submissions
 		   (ngo_user_id, pool_id, receipt_image_url, ocr_amount, ocr_vendor, ocr_date,
 		    claimed_amount, latitude, longitude)
@@ -146,8 +159,16 @@ func (h *ProofHandler) SubmitProof(c *gin.Context) {
 		return
 	}
 
+	// Lock the row to prevent concurrent processing.
+	_, err = tx.Exec(context.Background(),
+		`SELECT id FROM proof_submissions WHERE id = $1 FOR UPDATE`, proofID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "row lock failed"})
+		return
+	}
+
 	var poolLat, poolLng, poolRadiusKm float64
-	err = h.db.QueryRow(context.Background(),
+	err = tx.QueryRow(context.Background(),
 		`SELECT region_lat, region_lng, region_radius_km
 		 FROM crisis_pools WHERE id = $1`,
 		body.PoolID,
@@ -158,8 +179,7 @@ func (h *ProofHandler) SubmitProof(c *gin.Context) {
 	}
 
 	var totalSubs, verifiedSubs int
-	// Exclude the current submission from history so the new proof does not skew its own baseline.
-	_ = h.db.QueryRow(context.Background(),
+	_ = tx.QueryRow(context.Background(),
 		`SELECT
 		   COUNT(*) AS total,
 		   SUM(CASE WHEN verification_status = 'VERIFIED' THEN 1 ELSE 0 END) AS verified
@@ -188,13 +208,6 @@ func (h *ProofHandler) SubmitProof(c *gin.Context) {
 		newTrust = max0(currentTrust - 5)
 	}
 
-	tx, err := h.db.Begin(context.Background())
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "tx begin failed"})
-		return
-	}
-	defer tx.Rollback(context.Background())
-
 	_, err = tx.Exec(context.Background(),
 		`UPDATE proof_submissions SET verification_status=$1, verification_score=$2 WHERE id=$3`,
 		newStatus, score, proofID,
@@ -214,14 +227,8 @@ func (h *ProofHandler) SubmitProof(c *gin.Context) {
 	}
 
 	if newTrust < 20 {
-		_, err = tx.Exec(context.Background(),
-			`UPDATE users SET flagged=true WHERE id=$1`,
-			ngoID,
-		)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "flag update failed"})
-			return
-		}
+		_, _ = tx.Exec(context.Background(),
+			`UPDATE users SET flagged=true WHERE id=$1`, ngoID)
 	}
 
 	var reason string
@@ -241,16 +248,50 @@ func (h *ProofHandler) SubmitProof(c *gin.Context) {
 		return
 	}
 
+	// On-chain: releaseFunds if verification passed.
+	var chainNote string
+	if passed && h.bc != nil {
+		onchainProofID := generateProofID(proofID)
+		amountOnChain := blockchain.USDCToOnChain(body.ClaimedAmount)
+
+		var contractAddress, walletAddr string
+		_ = h.db.QueryRow(context.Background(),
+			`SELECT contract_address FROM crisis_pools WHERE id = $1`, body.PoolID,
+		).Scan(&contractAddress)
+		_ = h.db.QueryRow(context.Background(),
+			`SELECT wallet_address FROM users WHERE id = $1`, ngoID,
+		).Scan(&walletAddr)
+
+		if contractAddress != "" && walletAddr != "" {
+			txHash, err := h.bc.ReleaseFunds(context.Background(),
+				common.HexToAddress(contractAddress),
+				common.HexToAddress(walletAddr),
+				amountOnChain, onchainProofID)
+			if err != nil {
+				log.Printf("[blockchain] releaseFunds failed for proof %s: %v", proofID, err)
+				// Per PRD §6.5: if releaseFunds reverts, mark as REJECTED but do NOT update trust score.
+				_, _ = tx.Exec(context.Background(),
+					`UPDATE proof_submissions SET verification_status='REJECTED' WHERE id=$1`, proofID)
+				newStatus = "REJECTED"
+				chainNote = "on-chain releaseFunds reverted: " + err.Error()
+			} else {
+				// Save on-chain proof ID and tx hash.
+				proofIDHex := fmt.Sprintf("0x%x", onchainProofID)
+				_, _ = tx.Exec(context.Background(),
+					`UPDATE proof_submissions SET proof_id_onchain=$1, tx_hash=$2 WHERE id=$3`,
+					proofIDHex, txHash, proofID)
+				chainNote = "on-chain releaseFunds tx: " + txHash
+			}
+		} else {
+			chainNote = "missing contract_address or wallet — on-chain release skipped"
+		}
+	} else if passed {
+		chainNote = "blockchain not configured — on-chain release skipped"
+	}
+
 	if err := tx.Commit(context.Background()); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "commit failed"})
 		return
-	}
-
-	if passed {
-		onchainProofID, _ := generateProofID(proofID)
-		_ = onchainProofID // To avoid unused variable error
-		// TODO: blockchain.ReleaseFunds(ctx, poolContractAddress, ngoWalletAddress, claimedAmountBigInt, onchainProofID)
-		// On success: UPDATE proof_submissions SET proof_id_onchain=$1, tx_hash=$2 WHERE id=$3
 	}
 
 	response := gin.H{
@@ -258,6 +299,9 @@ func (h *ProofHandler) SubmitProof(c *gin.Context) {
 		"verification_status": newStatus,
 		"verification_score":  score,
 		"new_trust_score":     newTrust,
+	}
+	if chainNote != "" {
+		response["note"] = chainNote
 	}
 	if !passed {
 		response["message"] = "proof rejected — verification score below threshold"
@@ -302,7 +346,7 @@ func (h *ProofHandler) PoolProofs(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"proofs": scanProofRowsPublic(rows)})
 }
 
-// GetProof returns full detail for a single proof submission including verification result and release status.
+// GetProof returns full detail for a single proof submission.
 func (h *ProofHandler) GetProof(c *gin.Context) {
 	id := c.Param("id")
 	row := h.db.QueryRow(context.Background(),
