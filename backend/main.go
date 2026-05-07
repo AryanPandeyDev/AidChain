@@ -38,6 +38,23 @@ func main() {
 
 	r := gin.Default()
 
+	// CORS — allow frontend dev server and production origins.
+	r.Use(func(c *gin.Context) {
+		origin := c.GetHeader("Origin")
+		if origin == "" {
+			origin = "*"
+		}
+		c.Header("Access-Control-Allow-Origin", origin)
+		c.Header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Authorization,Content-Type,X-Internal-Secret")
+		c.Header("Access-Control-Allow-Credentials", "true")
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+		c.Next()
+	})
+
 	// ── public routes ─────────────────────────────────────────────────────────
 
 	// Clerk webhook — receives user.created / user.updated events.
