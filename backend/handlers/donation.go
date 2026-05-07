@@ -29,15 +29,8 @@ func (h *DonationHandler) RecordDonation(c *gin.Context) {
 		return
 	}
 
-	tx, err := h.db.Begin(context.Background())
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "tx begin failed"})
-		return
-	}
-	defer tx.Rollback(context.Background())
-
 	var donID string
-	err = tx.QueryRow(context.Background(),
+	err := h.db.QueryRow(context.Background(),
 		`INSERT INTO donations (donor_id, pool_id, amount, tx_hash)
 		 VALUES ($1,$2,$3,$4) RETURNING id`,
 		donorID, body.PoolID, body.Amount, body.TxHash,
@@ -47,20 +40,6 @@ func (h *DonationHandler) RecordDonation(c *gin.Context) {
 		return
 	}
 
-	// Mirror the on-chain balance in the off-chain funded_amount column.
-	_, err = tx.Exec(context.Background(),
-		`UPDATE crisis_pools SET funded_amount = funded_amount + $1 WHERE id = $2`,
-		body.Amount, body.PoolID,
-	)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "funded_amount update failed"})
-		return
-	}
-
-	if err := tx.Commit(context.Background()); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "commit failed"})
-		return
-	}
 	c.JSON(http.StatusCreated, gin.H{"donation_id": donID})
 }
 

@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -18,8 +17,7 @@ func NewTrustHandler(db *pgxpool.Pool) *TrustHandler { return &TrustHandler{db: 
 
 // MyTrust returns the trust score and last 20 log entries for the authenticated NGO.
 func (h *TrustHandler) MyTrust(c *gin.Context) {
-	ngoID, _ := c.Get("userID")
-	h.trustResponse(c, fmt.Sprintf("%v", ngoID))
+	h.trustResponse(c, c.GetString("userID"))
 }
 
 // NgoTrust returns the public trust score and history for any NGO by ID.
@@ -39,7 +37,7 @@ func (h *TrustHandler) trustResponse(c *gin.Context, ngoID string) {
 
 	rows, err := h.db.Query(context.Background(),
 		`SELECT id, previous_score, new_score, reason, submission_id, created_at
-		 FROM trust_score_logs WHERE ngo_id=$1 ORDER BY created_at DESC LIMIT 20`,
+		 FROM trust_score_logs WHERE ngo_user_id=$1 ORDER BY created_at DESC LIMIT 20`,
 		ngoID,
 	)
 	if err != nil {

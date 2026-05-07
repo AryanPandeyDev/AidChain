@@ -34,6 +34,10 @@ func main() {
 	// ── authenticated routes ──────────────────────────────────────────────────
 	api := r.Group("/api", middleware.JWT())
 
+	// connect wallet (requires JWT)
+	ah := handlers.NewAuthHandler(pool)
+	api.POST("/auth/connect-wallet", ah.ConnectWallet)
+
 	// pools (public read after auth)
 	pools := api.Group("/pools")
 	{
@@ -70,11 +74,16 @@ func main() {
 	}
 
 	// NGO self-service
+	assignH := handlers.NewAssignmentHandler(pool)
 	ngo := api.Group("/ngo")
 	{
 		h := handlers.NewNGOHandler(pool)
 		ngo.POST("/apply", middleware.Role("NGO"), h.Apply)
 		ngo.GET("/application/status", middleware.Role("NGO"), h.ApplicationStatus)
+		ngo.GET("/dashboard", middleware.Role("NGO"), h.Dashboard)
+
+		ngo.POST("/pools/:poolId/request-assignment", middleware.Role("NGO"), assignH.RequestAssignment)
+		ngo.GET("/assignment-requests", middleware.Role("NGO"), assignH.MyAssignmentRequests)
 	}
 
 	// ── admin routes ──────────────────────────────────────────────────────────
@@ -88,17 +97,12 @@ func main() {
 
 		ph := handlers.NewPoolHandler(pool)
 		admin.POST("/pools", ph.CreatePool)
-		admin.POST("/pools/:id/assign-ngo", ph.AssignNGO)
-	}
+		admin.POST("/pools/:id/pause", ph.PausePool)
+		admin.POST("/pools/:id/resume", ph.ResumePool)
 
-	// ── internal (ML / verification engine webhook) ───────────────────────────
-	// Protected by shared secret; called only by the Python verification service
-	// and the blockchain worker — never by the Android client.
-	internal := r.Group("/internal", middleware.InternalSecret())
-	{
-		vh := handlers.NewVerificationHandler(pool)
-		internal.POST("/proofs/:id/verify", vh.HandleVerificationResult)
-		internal.POST("/proofs/:id/release-confirmed", vh.ConfirmRelease)
+		admin.GET("/pools/:id/assignment-requests", assignH.ListPoolAssignmentRequests)
+		admin.POST("/pools/:id/assignment-requests/:reqId/approve", assignH.ApproveAssignmentRequest)
+		admin.POST("/pools/:id/assignment-requests/:reqId/reject", assignH.RejectAssignmentRequest)
 	}
 
 	addr := ":" + getEnv("PORT", "8080")
