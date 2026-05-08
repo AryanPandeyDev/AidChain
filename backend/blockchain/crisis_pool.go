@@ -17,6 +17,7 @@ const CrisisPoolABIJSON = `[
   {"type":"function","name":"resumeDonations","inputs":[],"outputs":[],"stateMutability":"nonpayable"},
   {"type":"function","name":"getPoolBalance","inputs":[],"outputs":[{"name":"","type":"uint256"}],"stateMutability":"view"},
   {"type":"function","name":"donationsPaused","inputs":[],"outputs":[{"name":"","type":"bool"}],"stateMutability":"view"},
+  {"type":"function","name":"totalDonated","inputs":[],"outputs":[{"name":"","type":"uint256"}],"stateMutability":"view"},
   {"type":"event","name":"DonationReceived","inputs":[{"name":"donor","type":"address","indexed":true},{"name":"amount","type":"uint256","indexed":false}]},
   {"type":"event","name":"NGOAssigned","inputs":[{"name":"ngo","type":"address","indexed":true}]},
   {"type":"event","name":"FundsReleased","inputs":[{"name":"ngo","type":"address","indexed":true},{"name":"amount","type":"uint256","indexed":false},{"name":"proofId","type":"bytes32","indexed":false}]},
@@ -128,4 +129,15 @@ func (c *Client) GetDonationsPaused(ctx context.Context, poolAddr common.Address
 		return false, fmt.Errorf("donationsPaused: %w", err)
 	}
 	return out[0].(bool), nil
+}
+
+// GetTotalDonated calls CrisisPool.totalDonated() — returns cumulative USDC donated in 6-decimal.
+func (c *Client) GetTotalDonated(ctx context.Context, poolAddr common.Address) (*big.Int, error) {
+	contract := bind.NewBoundContract(poolAddr, c.PoolABI, c.Eth, c.Eth, c.Eth)
+	var out []interface{}
+	err := contract.Call(&bind.CallOpts{Context: ctx}, &out, "totalDonated")
+	if err != nil {
+		return nil, fmt.Errorf("totalDonated: %w", err)
+	}
+	return out[0].(*big.Int), nil
 }

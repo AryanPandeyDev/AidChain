@@ -1,13 +1,25 @@
 import { useState } from "react";
 import { useSignIn } from "@clerk/clerk-react";
+import { useAuth } from "../auth/AuthProvider";
 
 export default function SignIn() {
   const { signIn, setActive, isLoaded } = useSignIn();
+  const { role } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  const redirectByRole = (userRole) => {
+    if (userRole === "ADMIN") {
+      window.location.hash = "#/admin";
+    } else if (userRole === "NGO") {
+      window.location.hash = "#/ngo/dashboard";
+    } else {
+      window.location.hash = "#/dashboard";
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -18,7 +30,10 @@ export default function SignIn() {
       const result = await signIn.create({ identifier: email, password });
       if (result.status === "complete") {
         await setActive({ session: result.createdSessionId });
-        window.location.hash = "#/dashboard";
+        // Use role from the sign-in result's public metadata if available,
+        // otherwise fall back to current auth context role
+        const meta = result.userData?.publicMetadata || {};
+        redirectByRole(meta.role || role || "DONOR");
       }
     } catch (err) {
       setError(err.errors?.[0]?.longMessage || err.message || "Sign in failed");
@@ -33,7 +48,7 @@ export default function SignIn() {
       await signIn.authenticateWithRedirect({
         strategy: "oauth_google",
         redirectUrl: window.location.origin + "/#/sso-callback",
-        redirectUrlComplete: window.location.origin + "/#/dashboard",
+        redirectUrlComplete: window.location.origin + "/#/sso-callback",
       });
     } catch (err) {
       setError(err.errors?.[0]?.longMessage || "Google sign in failed");
@@ -41,7 +56,12 @@ export default function SignIn() {
   };
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center p-6">
+    <div className="min-h-screen bg-background flex items-center justify-center p-6 relative">
+      {/* Back to home */}
+      <a href="#/" className="absolute top-6 left-6 flex items-center gap-1 text-sm font-bold text-on-surface-variant hover:text-primary transition-colors z-10">
+        <span className="material-symbols-outlined text-lg">arrow_back</span>
+        Home
+      </a>
       <div className="w-full max-w-[920px] grid grid-cols-1 lg:grid-cols-2 rounded-3xl overflow-hidden shadow-lg shadow-primary/5">
         {/* ── Left Panel: Hero ── */}
         <div className="relative hidden lg:flex flex-col justify-end p-10 min-h-[640px]">
@@ -107,12 +127,6 @@ export default function SignIn() {
                 <label className="block text-sm font-bold text-on-surface uppercase tracking-widest">
                   Password
                 </label>
-                <a
-                  href="#forgot"
-                  className="text-sm font-bold text-secondary hover:text-secondary-container transition-colors"
-                >
-                  Forgot password?
-                </a>
               </div>
               <div className="relative">
                 <input

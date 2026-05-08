@@ -1,5 +1,5 @@
 const PLATFORM_LINKS = [
-  { label: "Projects", href: "#projects" },
+  { label: "Browse Pools", href: "#/pools" },
   { label: "Transparency", href: "#transparency" },
   { label: "Impact Reports", href: "#impact" },
   { label: "NGO Portal", href: "#" },
@@ -55,9 +55,9 @@ export default function Footer() {
 
       {/* Bottom bar */}
       <div className="max-w-container-max mx-auto px-gutter py-md border-t border-outline-variant flex flex-col md:flex-row justify-between items-center text-xs text-on-surface-variant opacity-80 gap-2">
-        <span>© 2025 AidChain. Empowerment through radical transparency.</span>
+        <span>© {new Date().getFullYear()} AidChain. Empowerment through radical transparency.</span>
         <span className="font-mono">
-          Network Status: Polygon Mainnet | Block Height: #62,492,019
+          Network: Polygon
         </span>
       </div>
     </footer>

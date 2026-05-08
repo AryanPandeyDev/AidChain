@@ -8,16 +8,18 @@
 
 | Component | Technology |
 |---|---|
-| Language | Go 1.22+ |
-| HTTP Router | Chi or Gin |
-| Database | PostgreSQL 16 |
-| ORM / Query | sqlc or GORM |
-| Auth | JWT (HS256 or RS256) via `golang-jwt/jwt` |
-| Password Hashing | bcrypt (`golang.org/x/crypto/bcrypt`) |
-| Blockchain | go-ethereum (`ethclient`, `abigen`) |
-| File Storage | AWS S3 (via `aws-sdk-go-v2`) or GCS |
+| Language | Go 1.25 module in current repo |
+| HTTP Router | Gin |
+| Database | PostgreSQL |
+| DB Access | pgx/pgxpool with handwritten SQL |
+| Auth | Clerk session JWT verification via `github.com/clerk/clerk-sdk-go/v2` |
+| User Provisioning | Clerk webhook `/api/webhooks/clerk`; dev-only `/api/dev/provision` when Gin is not in release mode |
+| Blockchain | go-ethereum client wrappers and background event listener |
+| File Storage | Planned, not implemented yet. Frontend currently sends URL fields/placeholders. |
 | Config | Environment variables via `.env` + `godotenv` |
-| Migrations | golang-migrate |
+| Migrations | SQL files in `backend/migrations`; runner in `backend/cmd/migrate` |
+
+Notable change from older specs: this backend no longer owns email/password auth, bcrypt password verification, or `/api/auth/register` and `/api/auth/login`. Clerk owns sign-up/sign-in; the Go backend verifies Clerk sessions and maps them to local `users` rows.
 
 ---
 
@@ -26,7 +28,7 @@
 ```
 ┌──────────────┐     REST/JSON      ┌──────────────────────────────────────┐
 │   Frontend   │ ◄──────────────►   │           Go Backend                 │
-│  (React/Next)│                    │                                      │
+│  (React/Vite)│                    │                                      │
 └──────────────┘                    │  ┌─────────┐  ┌──────────────────┐  │
                                     │  │  HTTP    │  │  Verification    │  │
                                     │  │  Handlers│  │  Engine          │  │
@@ -237,26 +239,30 @@ CREATE TABLE event_sync_cursor (
 
 ## 4. API Endpoints
 
+The table below reflects the current Go/Gin implementation in `backend/main.go`. Older register/login JWT endpoints are intentionally absent because Clerk handles auth.
+
 ### 4.1 Auth
 
 | Method | Endpoint | Body | Auth | Description | Ref |
 |---|---|---|---|---|---|
-| POST | `/api/auth/register` | `{email, password, name, role}` | None | Create user. Role must be DONOR or NGO. | Flow 1.1, 1.2 |
-| POST | `/api/auth/login` | `{email, password}` | None | Return JWT + user. | Flow 1.3 |
-| POST | `/api/auth/connect-wallet` | `{walletAddress, signature, nonce}` | JWT | Verify sig, save wallet. | Flow 1.4 |
+| POST | `/api/webhooks/clerk` | Clerk Svix webhook payload | Svix signature | Sync Clerk users into local `users` and write `db_user_id`/`role` into Clerk public metadata. | Auth |
+| POST | `/api/dev/provision` | `{clerk_user_id, role}` | Dev only | Local development fallback when Clerk webhooks are not configured. Only registered outside Gin release mode. | Auth |
+| POST | `/api/auth/connect-wallet` | `{wallet_address, signature, nonce}` | Clerk session | Verify EIP-191 signature and save wallet address on the current user. | Flow 1.4 |
 
-**JWT payload:** `{userId, role, exp}`
+**Session identity:** authenticated handlers use Clerk session JWTs. `middleware.ClerkAuth()` fetches the Clerk user, reads public metadata, and sets `userID`, `role`, and `clerkUserID` in Gin context.
+
+**Recommended missing endpoint:** add `GET /api/me` so the frontend can load the local user profile and route by role without depending only on Clerk metadata timing.
 
 ### 4.2 NGO Verification
 
 | Method | Endpoint | Body | Auth | Description | Ref |
 |---|---|---|---|---|---|
-| POST | `/api/ngo/apply` | Multipart: org fields + 3 doc files | JWT (NGO) | Upload docs to S3, create application with status=AI_SCREENING. Triggers async AI screening. Requires wallet connected. | Flow 2.1 |
-| GET | `/api/ngo/application/status` | — | JWT (NGO) | Return own application status. AI_SCREENING and PENDING_REVIEW both show as "Under Review" to the NGO. | Flow 2.3 |
-| GET | `/api/admin/ngo/applications` | Query: `?status=PENDING_REVIEW` | JWT (ADMIN) | List applications. Default filter: PENDING_REVIEW (passed AI). Use `?status=AI_REJECTED` for oversight tab. Includes AI confidence score in list. | Flow 3.1 |
-| GET | `/api/admin/ngo/applications/{id}` | — | JWT (ADMIN) | Full application detail + signed doc URLs + AI screening results (aiConfidenceScore, aiSummary). | Flow 3.1 |
-| POST | `/api/admin/ngo/applications/{id}/approve` | — | JWT (ADMIN) | → Call `PoolFactory.addVerifiedNGO(wallet)` on-chain → update status to VERIFIED → set trustScore=50. | Flow 3.2 |
-| POST | `/api/admin/ngo/applications/{id}/reject` | `{reason}` | JWT (ADMIN) | Update status to REJECTED with reason. No on-chain action. | Flow 3.3 |
+| POST | `/api/ngo/apply` | JSON org fields + document URL fields | Clerk NGO | Create application with status `AI_SCREENING`; triggers async AI screening. Current frontend still sends placeholder document URLs until upload support exists. | Flow 2.1 |
+| GET | `/api/ngo/application/status` | — | Clerk NGO | Return own latest application status and review fields. | Flow 2.3 |
+| GET | `/api/admin/ngo/applications` | Query: `?status=PENDING_REVIEW` | Clerk ADMIN | List applications filtered by status; defaults to `PENDING_REVIEW`. | Flow 3.1 |
+| GET | `/api/admin/ngo/applications/{id}` | — | Clerk ADMIN | Full application detail + document URLs + AI screening results/evidence. | Flow 3.1 |
+| POST | `/api/admin/ngo/applications/{id}/approve` | — | Clerk ADMIN | Call `PoolFactory.addVerifiedNGO(wallet)` when blockchain is configured, then set status `VERIFIED` and trust score 50. | Flow 3.2 |
+| POST | `/api/admin/ngo/applications/{id}/reject` | `{reason}` | Clerk ADMIN | Update status to `REJECTED` with reason. No on-chain action. | Flow 3.3 |
 
 ### 4.3 Crisis Pools
 
@@ -264,11 +270,13 @@ CREATE TABLE event_sync_cursor (
 |---|---|---|---|---|---|
 | GET | `/api/pools` | — | None | List active pools with funded amounts, NGO count. | Flow 4.1 |
 | GET | `/api/pools/{id}` | — | None | Pool detail + assigned NGOs + trust scores + recent proofs + on-chain balance. | Flow 4.2 |
-| POST | `/api/admin/pools` | `{name, description, region, regionLat, regionLng, regionRadiusKm, targetAmount, maxPerClaim, maxPerNGOPerDay, maxPerNGOPool}` | JWT (ADMIN) | → Call `PoolFactory.deployPool(caps)` on-chain → save metadata to DB. | Flow 3.4 |
-| POST | `/api/admin/pools/{id}/pause` | — | JWT (ADMIN) | → Call `CrisisPool.pauseDonations()` on-chain. | Flow 3.6 |
-| POST | `/api/admin/pools/{id}/resume` | — | JWT (ADMIN) | → Call `CrisisPool.resumeDonations()` on-chain. | Flow 3.6 |
+| POST | `/api/admin/pools` | `{name, description, region, region_lat, region_lng, region_radius_km, target_amount, max_per_claim, max_per_ngo_per_day, max_per_ngo_pool, contract_address?}` | Clerk ADMIN | Call `PoolFactory.deployPool(caps)` when blockchain is configured; otherwise requires `contract_address` for MVP fallback. Saves metadata to DB. | Flow 3.4 |
+| POST | `/api/admin/pools/{id}/pause` | — | Clerk ADMIN | Call `CrisisPool.pauseDonations()` when blockchain is configured, then update DB. | Flow 3.6 |
+| POST | `/api/admin/pools/{id}/resume` | — | Clerk ADMIN | Call `CrisisPool.resumeDonations()` when blockchain is configured, then update DB. | Flow 3.6 |
 
 ### 4.4 Pool Assignment Requests
+
+Current implementation note: assignment requests use JSON bodies, not multipart uploads. `supporting_doc_url` is an optional URL field only; file upload support is still missing. All routes below are protected by Clerk sessions and role middleware, even if older rows say JWT.
 
 | Method | Endpoint | Body | Auth | Description | Ref |
 |---|---|---|---|---|---|
@@ -280,6 +288,8 @@ CREATE TABLE event_sync_cursor (
 
 ### 4.5 Donations
 
+Current implementation note: donations are read-only from the API. The backend records donations through the blockchain event listener. There is no `POST /api/donations` in `backend/main.go`; donor transaction preparation/direct wallet donation remains an MVP gap.
+
 | Method | Endpoint | Body | Auth | Description | Ref |
 |---|---|---|---|---|---|
 | POST | `/api/donations` | `{poolId, amount, txHash}` | JWT (DONOR) | Record donation after on-chain tx. Optionally verify txHash via RPC. | Flow 4.3 |
@@ -287,6 +297,8 @@ CREATE TABLE event_sync_cursor (
 | GET | `/api/donations/pool/{poolId}` | — | None | All donations for a pool. | — |
 
 ### 4.6 Proof Submissions
+
+Current implementation note: proof submission currently accepts JSON with a `receipt_image_url` and manually supplied OCR fields. Receipt image upload and OCR extraction endpoints are not implemented yet.
 
 | Method | Endpoint | Body | Auth | Description | Ref |
 |---|---|---|---|---|---|
@@ -296,6 +308,8 @@ CREATE TABLE event_sync_cursor (
 | GET | `/api/proofs/{id}` | — | JWT | Single proof detail. NGO sees own; donors see verified ones. | — |
 
 ### 4.7 Trust Score
+
+Current implementation note: trust routes are under the Clerk-protected `/api` group. `GET /api/trust/ngo/:ngoId` is authenticated in the current backend, not public.
 
 | Method | Endpoint | Auth | Description | Ref |
 |---|---|---|---|---|
@@ -469,6 +483,8 @@ A background goroutine that polls or subscribes to on-chain events. Ensures the 
 
 ## 8. File Storage (S3/GCS)
 
+Current implementation status: storage is planned but not implemented. The frontend currently sends document and receipt URL fields, and the NGO application screen still creates development placeholder URLs. Add presigned upload endpoints before treating this section as active behavior.
+
 ### Upload Flow
 
 1. Receive multipart file in handler
@@ -488,11 +504,15 @@ A background goroutine that polls or subscribes to on-chain events. Ensures the 
 ```env
 # Server
 PORT=8080
-JWT_SECRET=your-secret-key
-JWT_EXPIRY_HOURS=24
+CLERK_SECRET_KEY=sk_...
+CLERK_WEBHOOK_SECRET=whsec_...
 
 # Database
 DATABASE_URL=postgres://user:pass@localhost:5432/aidchain?sslmode=disable
+
+# AI screening
+AI_SCREENING_URL=http://localhost:8090
+INTERNAL_SECRET=shared-secret-if-enabled
 
 # Blockchain
 POLYGON_RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/YOUR_KEY
@@ -514,6 +534,21 @@ AWS_SECRET_ACCESS_KEY=...
 ---
 
 ## 10. Project Structure
+
+Current repository structure is flatter than the older internal/service layout below:
+
+```text
+backend/
+  main.go
+  handlers/
+  middleware/
+  db/
+  blockchain/
+  migrations/
+  cmd/migrate/
+```
+
+The older tree below is retained only as an architectural reference and should not be treated as the current file layout.
 
 ```
 backend/
@@ -626,7 +661,7 @@ For MVP, the backend holds the admin private key and signs directly. For product
 
 ### 11.5 Rate Limiting
 
-- `/api/auth/register` and `/api/auth/login`: 5 req/min per IP
+- Clerk handles frontend sign-up/sign-in rate limiting; there are no Go `/api/auth/register` or `/api/auth/login` endpoints in the current repo.
 - `/api/proofs`: 10 req/min per NGO user
 - All admin endpoints: 30 req/min per admin
 

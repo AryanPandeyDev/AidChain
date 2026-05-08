@@ -46,7 +46,7 @@ func main() {
 		}
 		c.Header("Access-Control-Allow-Origin", origin)
 		c.Header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Authorization,Content-Type,X-Internal-Secret")
+		c.Header("Access-Control-Allow-Headers", "Authorization,Content-Type,X-Internal-Secret,X-Admin-Password")
 		c.Header("Access-Control-Allow-Credentials", "true")
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
@@ -78,6 +78,8 @@ func main() {
 
 	// connect wallet (requires auth)
 	ah := handlers.NewAuthHandler(pool)
+	api.GET("/me", ah.Me)
+	api.GET("/auth/wallet-nonce", ah.WalletNonce)
 	api.POST("/auth/connect-wallet", ah.ConnectWallet)
 
 	// donations (read-only endpoints — recording is done via event listener)
@@ -120,7 +122,7 @@ func main() {
 	}
 
 	// ── admin routes ──────────────────────────────────────────────────────────
-	admin := api.Group("/admin", middleware.Role("ADMIN"))
+	admin := r.Group("/api/admin", middleware.AdminPasswordAuth())
 	{
 		nh := handlers.NewNGOHandler(pool, bc)
 		admin.GET("/ngo/applications", nh.ListApplications)

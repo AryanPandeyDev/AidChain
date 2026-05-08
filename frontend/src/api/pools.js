@@ -2,36 +2,29 @@ import { apiFetch } from "./client";
 
 /**
  * Fetch all active crisis pools from the backend.
- * Falls back to mock data when the backend is unreachable.
+ * Errors propagate to the caller — no silent fallback to fake data.
  */
 export async function fetchPools() {
-  try {
-    const data = await apiFetch("/api/pools");
-    const pools = Array.isArray(data) ? data : data.pools || [];
-    return pools.map(mapPool);
-  } catch {
-    console.warn("[AidChain] Backend unreachable, using fallback pool data.");
-    return FALLBACK_POOLS;
-  }
+  const data = await apiFetch("/api/pools");
+  const pools = Array.isArray(data) ? data : data.pools || [];
+  return pools.map(mapPool);
 }
 
 /**
  * Fetch a single pool by ID with full detail (NGOs, on-chain balance).
  */
 export async function fetchPool(id) {
-  try {
-    const data = await apiFetch(`/api/pools/${id}`);
-    return mapPoolDetail(data);
-  } catch {
-    return FALLBACK_POOLS.find((p) => p.id === id) || FALLBACK_POOLS[0];
-  }
+  const data = await apiFetch(`/api/pools/${id}`);
+  return mapPoolDetail(data);
 }
 
 function mapPool(p) {
   const target = parseFloat(p.target_amount || 0);
-  const balance = parseFloat(p.pool_balance || 0);
-  const donated = target - balance || parseFloat(p.funded_amount || 0);
-  const pct = target > 0 ? Math.round((donated / target) * 100) : 0;
+  const balance = p.pool_balance != null ? parseFloat(p.pool_balance) : null;
+  // Use on-chain totalDonated as the authoritative donated amount.
+  // Falls back to 0 if the backend doesn't return it (e.g. blockchain offline).
+  const donated = parseFloat(p.donated_amount || 0);
+  const pct = target > 0 ? Math.min(100, Math.round((donated / target) * 100)) : 0;
 
   return {
     id: p.id,
@@ -46,6 +39,7 @@ function mapPool(p) {
     status: p.status || "ACTIVE",
     donationsPaused: p.donations_paused || false,
     createdAt: p.created_at,
+    tag: p.tag || null,
   };
 }
 
@@ -62,30 +56,7 @@ function mapPoolDetail(p) {
       ngoUserId: n.ngo_user_id,
       walletAddress: n.wallet_address,
       trustScore: n.trust_score,
+      organizationName: n.organization_name,
     })),
   };
 }
-
-const FALLBACK_POOLS = [
-  {
-    id: "pool-1", name: "Sudan Emergency Relief",
-    description: "Providing immediate food security and medical supplies to displaced families in the Darfur region.",
-    region: "Sudan, Darfur", targetAmount: 200000, fundedAmount: 150000, poolBalance: 50000,
-    percentFunded: 75, contractAddress: "0x7a...F92", status: "ACTIVE", donationsPaused: false,
-    tag: "EMERGENCY",
-  },
-  {
-    id: "pool-2", name: "Horn of Africa Drought",
-    description: "Implementing long-term solar-powered irrigation systems to combat recurring famine cycles.",
-    region: "Horn of Africa", targetAmount: 100000, fundedAmount: 40000, poolBalance: 60000,
-    percentFunded: 40, contractAddress: "0x3b...A14", status: "ACTIVE", donationsPaused: false,
-    tag: "SUSTAINABILITY",
-  },
-  {
-    id: "pool-3", name: "Refugee Education Fund",
-    description: "Supporting digital literacy and primary schooling for displaced youth in border camps.",
-    region: "East Africa", targetAmount: 20000, fundedAmount: 18000, poolBalance: 2000,
-    percentFunded: 90, contractAddress: "0x1c...D87", status: "ACTIVE", donationsPaused: false,
-    tag: "EDUCATION",
-  },
-];

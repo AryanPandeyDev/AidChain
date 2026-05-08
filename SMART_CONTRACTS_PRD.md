@@ -6,6 +6,8 @@
 
 ## 1. Overview
 
+Current repository status: this document matches the implemented contract direction better than the older root PRD. The active contract toolchain is Foundry, not Hardhat, and releases are immediate through `releaseFunds()` with no timelock/pending-release flow.
+
 The smart contract layer is responsible for:
 
 - **Managing NGO verification** on-chain via a whitelist
@@ -48,7 +50,7 @@ Two privileged roles exist across the contracts. They are **separate wallets**.
 | Role | Wallet Type | Purpose | Used In |
 |---|---|---|---|
 | **Admin** | Cold/hardware wallet (e.g. Ledger) | NGO approval, pool creation, NGO assignment, donation pausing | PoolFactory, CrisisPool |
-| **Verifier** | Hot wallet controlled by Spring Boot backend | Initiates and immediately executes fund releases after backend verification passes | CrisisPool only |
+| **Verifier** | Hot wallet controlled by the Go/Gin backend | Initiates and immediately executes fund releases after backend verification passes | CrisisPool only |
 
 ### Why separate?
 

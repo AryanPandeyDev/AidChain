@@ -8,39 +8,32 @@ function formatAmount(amount) {
 }
 
 const TAG_STYLES = {
-  EMERGENCY: "bg-primary text-on-primary",
+  EMERGENCY: "bg-error text-on-error",
   SUSTAINABILITY: "bg-secondary text-on-secondary",
-  EDUCATION: "bg-primary text-on-primary",
+  ACTIVE: "bg-secondary text-on-secondary",
   DEFAULT: "bg-primary text-on-primary",
 };
 
-const DEFAULT_IMAGES = [
-  "https://lh3.googleusercontent.com/aida-public/AB6AXuBH7s5AcmQAjNaW9Y_2-mzywLTt5MRTXxFBPEGCKe4ZCjYxEwfxfijkkP1p7IKZTf9-91U1y6aq9JoSvD-pXAPUlRBZ2uZf7dddsyVhesnNfqUVZzNb656tyOJfd_c45CTQyH3wUGjw3Hzqc-mmnwlWoPUAM9FjyhPCD6W1LWuq6JnT6kRyu-ms4hu9wc7mTPU2InNYtA3r0rKBnrlwyA-3bybuHFpIr3LQEnlRocW2oQk1rHPLt2YdXIzuG4QF_USJyQuaaHy4bok",
-  "https://lh3.googleusercontent.com/aida-public/AB6AXuC_zd4ZI_zZNkCsV4ky_7I-lVjPP2Eksm2hPyS5qUM-BfOnUvz-hNrPv06YNA89CxWYVz8W7KpkOd3MrJqxJsmBa1YT6aYugDrff-Xi7tejnH4zCCsECgEpeoWPOLCz0VpZtNJUxjCiWUBhsGTo7A4QQr5bw9eUeiB3_V7ie67QMzDu5tAz0Ks04iJzNsrPF1lktZroYSSNgkHJYiuIOtzLtQ5bMPMWVBdnJHiBXBmRrqHt-u0X1VkfybrIYidYSJUFPqmZxp8aNDo",
-  "https://lh3.googleusercontent.com/aida-public/AB6AXuAJ6HmIBBWtZjdq90VFAJqBmeNVuaw52RbrcX5ojFQdYgNQoIhW-SawFESSshBdkj0SkSEvkFjIhHHBNiEWvWvKyFUJwB3pLAaP40A5hJPY_6KvRLeQgX-01T2hjhdTwT84GQ34CrAiXmcYGc0Mkkgy-vGUL1wP-OrzPhWigMpsv8kaQK9MU7hs-9QwpT4MCMuuuMziQdXIlEY_QMdSlJzcrf2vofjZhr5xLRi8F1paw-1ZjRVxNczpBQYti8mlJy9oVGy_iWM-pTw",
-];
-
-function PoolCard({ pool, index }) {
-  const image = pool.image || DEFAULT_IMAGES[index % DEFAULT_IMAGES.length];
-  const tag = pool.tag || (pool.region?.toLowerCase().includes("sudan") ? "EMERGENCY" : "ACTIVE");
+function PoolCard({ pool }) {
+  const tag = pool.tag || "ACTIVE";
   const tagStyle = TAG_STYLES[tag] || TAG_STYLES.DEFAULT;
 
   return (
-    <div className="bg-surface rounded-2xl overflow-hidden shadow-sm hover:shadow-lg transition-all group">
-      <div className="relative overflow-hidden h-48">
-        <img
-          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-          alt={pool.name}
-          src={image}
-        />
-        <div
-          className={`absolute top-4 left-4 ${tagStyle} px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest`}
-        >
-          {tag}
+    <a href={`#/pool/${pool.id}`} className="bg-surface rounded-2xl overflow-hidden shadow-sm hover:shadow-lg transition-all group block">
+      {/* Gradient header */}
+      <div className="bg-gradient-to-br from-primary-container to-primary-fixed/40 px-lg py-5">
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-1.5 text-xs text-on-primary-container">
+            <span className="material-symbols-outlined text-sm">location_on</span>
+            {pool.region || "Global"}
+          </div>
+          <span className={`${tagStyle} px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest`}>
+            {tag}
+          </span>
         </div>
+        <h3 className="text-xl font-bold text-primary group-hover:text-secondary transition-colors">{pool.name}</h3>
       </div>
       <div className="p-lg">
-        <h3 className="text-xl font-bold text-primary mb-1">{pool.name}</h3>
         <p className="text-on-surface-variant text-sm mb-md line-clamp-2 leading-relaxed">
           {pool.description}
         </p>
@@ -60,14 +53,13 @@ function PoolCard({ pool, index }) {
             ></div>
           </div>
         </div>
-        <button
-          className="w-full mt-lg py-3 border-2 border-primary text-primary font-bold rounded-full hover:bg-primary hover:text-on-primary transition-colors"
-          disabled={pool.donationsPaused}
+        <div
+          className="w-full mt-lg py-3 border-2 border-primary text-primary font-bold rounded-full group-hover:bg-primary group-hover:text-on-primary transition-colors text-center"
         >
-          {pool.donationsPaused ? "Paused" : "Donate Now"}
-        </button>
+          {pool.donationsPaused ? "View Details" : "Donate Now"}
+        </div>
       </div>
-    </div>
+    </a>
   );
 }
 
@@ -92,9 +84,9 @@ export default function FeaturedPools() {
         </div>
         <a
           className="text-primary font-bold flex items-center gap-1 hover:underline"
-          href="#projects"
+          href="#/pools"
         >
-          View All Projects{" "}
+          View All Pools{" "}
           <span className="material-symbols-outlined text-base">arrow_forward</span>
         </a>
       </div>
@@ -115,13 +107,13 @@ export default function FeaturedPools() {
                 </div>
               </div>
             ))
-          : displayPools.map((pool, i) => (
-              <PoolCard key={pool.id} pool={pool} index={i} />
+          : displayPools.map((pool) => (
+              <PoolCard key={pool.id} pool={pool} />
             ))}
       </div>
       {isError && (
         <p className="text-center text-on-surface-variant mt-md text-sm">
-          Showing cached data — backend is currently unreachable.
+          Could not load pools — the backend may be starting up.
         </p>
       )}
     </section>

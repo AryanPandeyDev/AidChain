@@ -91,7 +91,12 @@ export default function Register() {
   };
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center p-6">
+    <div className="min-h-screen bg-background flex items-center justify-center p-6 relative">
+      {/* Back to home */}
+      <a href="#/" className="absolute top-6 left-6 flex items-center gap-1 text-sm font-bold text-on-surface-variant hover:text-primary transition-colors z-10">
+        <span className="material-symbols-outlined text-lg">arrow_back</span>
+        Home
+      </a>
       <div className="w-full max-w-[960px] grid grid-cols-1 lg:grid-cols-2 rounded-3xl overflow-hidden shadow-lg shadow-primary/5 min-h-[720px]">
         {/* ── Left Panel ── */}
         <div className="relative hidden lg:flex flex-col justify-end p-10">

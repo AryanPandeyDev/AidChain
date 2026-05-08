@@ -1,5 +1,7 @@
 # PRD: AI Pre-Screening Agent Workflow for NGO Verification
 
+> Current repo status: this is no longer just a proposal. A Python FastAPI service exists under `ai-screening-service`, with a LangGraph workflow, scoring module, Pydantic models, and `/screen` API contract. The Go backend calls the service asynchronously after `POST /api/ngo/apply` using `AI_SCREENING_URL`.
+
 ## 1. Summary
 
 AidChain needs an AI pre-screening system that evaluates NGO applications before they reach admin review. The system should run asynchronously after application submission, collect evidence from multiple sources, calculate a transparent legitimacy score, generate a human-readable summary, and return a final `PASS` or `FAIL` verdict.
@@ -409,6 +411,18 @@ The full evidence object should be stored/logged for audit if possible.
 - Engineer can add or replace agents without changing the full flow.
 
 ## 14. MVP Implementation Recommendation
+
+Current implementation mapping:
+
+| Recommended piece | Repo status |
+|---|---|
+| FastAPI service | Implemented in `ai-screening-service/app/main.py` |
+| LangGraph workflow | Implemented in `ai-screening-service/app/graph.py` |
+| Request/response models | Implemented in `ai-screening-service/app/models.py` |
+| Scoring module | Implemented in `ai-screening-service/app/scoring.py` |
+| LLM helpers | Implemented in `ai-screening-service/app/llm.py` |
+| Go backend integration | Implemented in `backend/handlers/ngo.go` via async HTTP call |
+| Env var | Standardize on `AI_SCREENING_URL`; update README/env files consistently |
 
 Build v1 in this order:
 

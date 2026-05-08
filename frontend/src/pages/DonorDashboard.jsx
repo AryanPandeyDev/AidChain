@@ -25,19 +25,15 @@ export default function DonorDashboard() {
 
   return (
     <div className="min-h-screen bg-background flex">
-      <Sidebar active="dashboard" role="Donor" userName={firstName} />
+      <Sidebar active="dashboard" userName={firstName} />
 
-      <main className="ml-[200px] flex-1 p-8 pb-16">
+      <main className="ml-[220px] flex-1 p-8 pb-16">
         <div className="max-w-[1100px] mx-auto flex gap-8">
           <div className="flex-1 min-w-0">
             {/* Welcome */}
             <div className="flex flex-wrap items-start justify-between gap-4 mb-8">
               <div>
                 <h1 className="text-4xl font-extrabold text-primary tracking-tight">Welcome back, {firstName}</h1>
-                <div className="flex items-center gap-2 mt-2">
-                  <span className="w-2 h-2 rounded-full bg-green-500 inline-block"></span>
-                  <span className="text-xs font-bold text-on-surface-variant bg-surface-container-high px-2 py-0.5 rounded-full">Connected</span>
-                </div>
               </div>
               <div className="flex gap-3">
                 <div className="bg-surface-container-lowest border border-outline-variant rounded-xl px-5 py-3 text-center min-w-[130px]">

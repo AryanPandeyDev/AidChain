@@ -4,6 +4,46 @@
 
 ---
 
+## 0. Current Repository Scope And Stack
+
+This PRD has been updated to match the current repository implementation. Older sections may still describe the original Android/Spring Boot concept; the active product in this repo is now a web-first stack.
+
+### Current Tech Stack
+
+| Layer | Current implementation |
+|---|---|
+| Frontend | React 19 + Vite 8 + Tailwind CSS, React Query, Clerk React SDK, hash-based routing |
+| Backend API | Go 1.25 module, Gin HTTP router, pgx/PostgreSQL, Clerk SDK, go-ethereum |
+| Auth | Clerk sessions + Clerk webhooks; no in-repo password/JWT auth endpoints |
+| Database | PostgreSQL migrations in `backend/migrations` |
+| AI screening | Python FastAPI service using LangGraph, LangChain/OpenAI, HTTPX/BeautifulSoup, pypdf |
+| Smart contracts | Solidity + Foundry; `PoolFactory`, `CrisisPool`, `MockUSDC` |
+| Chain target | Polygon PoS for production, local/Amoy-compatible mock USDC for development |
+
+### Current Product Surface
+
+| Area | Status in repo |
+|---|---|
+| Landing page | Implemented as mostly decorative marketing UI, with featured pools wired to pool API fallback logic |
+| Donor dashboard | Partially implemented; reads pools and donation history, but public pool detail/donation flow is incomplete |
+| NGO onboarding | Implemented as Clerk signup + frontend application form; document upload is still placeholder URL based |
+| AI pre-screening | Implemented as a separate service and asynchronously called by backend; env naming needs consistency |
+| Admin review | Implemented for NGO applications, approval/rejection, pool creation, assignment requests, pause/resume |
+| Proof submission | Implemented with manual receipt URL/OCR fields; real upload/OCR extraction remains missing |
+| Blockchain sync | Implemented as Go event listener reading contract events into Postgres |
+| Storage | Planned but not implemented; S3/GCS upload endpoints are still missing |
+
+### Active MVP Priorities
+
+1. Replace fake upload URLs with real document and receipt upload support.
+2. Add a real donor-facing pool detail and donation flow.
+3. Remove silent frontend mock fallbacks once backend responses are complete.
+4. Add `/api/me` or equivalent backend profile endpoint for reliable role/profile routing.
+5. Align pool funding math across backend, chain events, and frontend displays.
+6. Standardize AI screening environment variables and internal service auth.
+
+---
+
 ## 1. Problem Statement
 
 Humanitarian aid systems today face three critical issues:
@@ -20,14 +60,14 @@ These problems result in inefficiency, eroded donor trust, and delayed impact du
 
 ## 2. Solution Overview
 
-AidChain is a **mobile-first, blockchain-integrated platform** that enables:
+AidChain is a **web-first, blockchain-integrated platform** that enables:
 
 - **Direct funding** of crisis pools via stablecoins
 - **Proof-based reimbursement** — NGOs submit receipt photos, OCR data, and location tags
 - **Automated fund release** — smart contracts release escrowed funds after backend verification
 - **Trust scoring** — NGOs build verifiable reputation through consistent, honest submissions
 
-The system connects donors and NGOs through a single Android application, verifies real-world expenditures via a multi-signal backend, and uses smart contracts to ensure transparent, conditional fund movement.
+The system connects donors, NGOs, and admins through a React web app, verifies real-world expenditures via a multi-signal Go backend and AI screening service, and uses smart contracts to ensure transparent, conditional fund movement.
 
 ---
 
@@ -46,17 +86,42 @@ The platform operator responsible for reviewing and approving NGO applications, 
 
 ## 4. Architecture
 
-The system is built on four layers:
+The current repository is built on five layers:
+
+```text
+React/Vite frontend
+  - Clerk auth UI/session
+  - Donor, NGO, admin dashboards
+  - React Query API calls
+
+Go/Gin backend API
+  - Clerk session verification and webhook provisioning
+  - PostgreSQL persistence via pgx
+  - Verification engine, trust scoring, blockchain orchestration
+
+Python AI screening service
+  - FastAPI /screen endpoint
+  - LangGraph workflow for NGO pre-screening
+
+Solidity smart contracts
+  - PoolFactory and CrisisPool, tested/deployed with Foundry
+
+PostgreSQL + blockchain event sync
+  - Migrations in backend/migrations
+  - Background listener syncs pool/donation/release events
+```
+
+The original concept diagram below is retained for historical context only and should not be used for implementation decisions:
 
 ```
 ┌─────────────────────────────────────────────────┐
-│                 📱 Android App                   │
-│          (Kotlin + Jetpack Compose)              │
+│                 Web Frontend                     │
+│          (React + Vite + Tailwind)               │
 │         Donor UI  ←──→  NGO UI                   │
 └──────────────────┬──────────────────────────────┘
                    │ REST API
 ┌──────────────────▼──────────────────────────────┐
-│              ⚙️ Spring Boot Backend              │
+│              Go/Gin Backend API                  │
 │  Auth · OCR · Verification · Trust Scoring      │
 │  Blockchain Orchestration · Event Sync          │
 └────────┬────────────────────────┬───────────────┘
@@ -69,31 +134,33 @@ The system is built on four layers:
 └─────────────────┘    └──────────────────────────┘
 ```
 
-### 4.1 Mobile Layer (Android)
-A single Android application supporting both donor and NGO roles. The interface adapts dynamically based on authenticated user role.
+### 4.1 Frontend Layer (React Web)
+A single Vite/React web application supports donor, NGO, and admin surfaces. The current implementation uses hash-based routing and Clerk for authentication.
 
-- **Language:** Kotlin
-- **UI:** Jetpack Compose
-- **OCR:** Google ML Kit (on-device)
-- **Wallet:** Web3j for Android
-- **Architecture:** MVVM + Clean Architecture
+- **Language/UI:** React 19 with Vite, Tailwind CSS, Material Symbols, React Query
+- **Auth:** Clerk React SDK
+- **Routing:** Manual hash routing in `App.jsx` today; several linked routes still need implementation
+- **Wallet:** Browser wallet integration started via `window.ethereum`; signature persistence flow is incomplete
+- **OCR:** Not implemented client-side; proof submission currently accepts manually entered OCR fields
 
-### 4.2 Backend Layer (Spring Boot)
-Centralized orchestrator responsible for verification, trust scoring, and blockchain interaction.
+### 4.2 Backend Layer (Go/Gin)
+Centralized orchestrator responsible for API access, verification, trust scoring, blockchain interaction, event sync, and Clerk user provisioning.
 
-- **Framework:** Spring Boot
-- **Database:** PostgreSQL
-- **Responsibilities:** Auth, NGO application review, proof ingestion, OCR processing, location validation, verification engine, trust score calculation, blockchain event sync, NGO wallet whitelisting
+- **Framework:** Go + Gin
+- **Database:** PostgreSQL via pgx
+- **Auth:** Clerk session JWT verification via Clerk SDK; Clerk webhook sync writes local users and metadata
+- **Blockchain:** go-ethereum client and background event listener
+- **Responsibilities:** NGO application review, AI screening trigger, proof ingestion, location validation, verification engine, trust score calculation, blockchain event sync, NGO wallet whitelisting, pool deployment and assignment
 
 ### 4.3 Blockchain Layer (Polygon PoS)
 Smart contracts managing fund pools, escrow, and conditional release.
 
 - **Chain:** Polygon PoS (low gas fees, strong stablecoin liquidity)
 - **Stablecoin:** USDC (ERC20)
-- **Contract Language:** Solidity, Hardhat (tooling)
+- **Contract Language:** Solidity, Foundry/Forge tooling
 - **Key Contracts:**
   - `PoolFactory` — NGO whitelist + deploys isolated CrisisPool contracts per crisis
-  - `CrisisPool` — per-pool escrow with immutable caps, timelock release, and fraud prevention
+  - `CrisisPool` — per-pool escrow with immutable caps, immediate verified release, and fraud prevention
 - **On-chain storage:** Minimal — only data needed for contract logic (caps, addresses, spending tracking). All metadata (names, regions, descriptions) stored off-chain in backend. Pool ID = contract address.
 
 ### 4.4 Data Pipeline Layer (Post-MVP)
@@ -111,11 +178,11 @@ Ingests external humanitarian datasets to detect crises and auto-create funding 
 #### Admin Features
 | Feature | Description |
 |---|---|
-| **Admin Dashboard** | Web-based panel (separate from Android app) |
+| **Admin Dashboard** | Web-based panel in the React app |
 | **Review NGO Applications** | View submitted documents, approve or reject with reason |
 | **Create Crisis Pools** | Create pools with name, region, target amount, and description |
 | **Assign NGOs to Pools** | Assign one or more verified NGOs to an active pool |
-| **Whitelist NGO Wallet** | On approval, backend calls NGORegistry contract to whitelist the NGO wallet |
+| **Whitelist NGO Wallet** | On approval, backend calls `PoolFactory.addVerifiedNGO` to whitelist the NGO wallet |
 
 #### Donor Features
 | Feature | Description |
@@ -145,12 +212,10 @@ Ingests external humanitarian datasets to detect crises and auto-create funding 
 | Contract | Feature | Description |
 |---|---|---|
 | **PoolFactory** | NGO Whitelist | Stores addresses of admin-approved NGO wallets (addVerifiedNGO / revokeNGO / isVerified) |
-| **PoolFactory** | Deploy Pool | Admin deploys a new CrisisPool with immutable caps (maxPerClaim, maxPerNGOPerDay, maxPerNGOPool, timelockDuration) |
+| **PoolFactory** | Deploy Pool | Admin deploys a new CrisisPool with immutable caps (maxPerClaim, maxPerNGOPerDay, maxPerNGOPool) |
 | **CrisisPool** | Accept Donations | Receive USDC deposits from donors via ERC20 transferFrom |
 | **CrisisPool** | Assign NGO | Admin assigns a verified NGO to this pool |
-| **CrisisPool** | Initiate Release | Verifier (backend) creates a timelock-pending release after proof verification |
-| **CrisisPool** | Execute Release | Anyone can trigger USDC transfer to NGO after timelock expires |
-| **CrisisPool** | Cancel Release | Admin can cancel a pending release before execution |
+| **CrisisPool** | Release Funds | Verifier (backend) releases USDC directly to the assigned, verified NGO after proof verification |
 | **CrisisPool** | Pause/Resume | Admin can pause new donations without affecting existing funds |
 
 #### Backend — Verification Engine
@@ -202,7 +267,7 @@ Status: PENDING_REVIEW → App shows "Under Review" screen
     ▼
 Admin reviews documents on admin panel
     │
-    ├──Approved──→ Backend whitelists NGO wallet in NGORegistry contract
+    ├──Approved──→ Backend whitelists NGO wallet in PoolFactory
     │               Status: VERIFIED → NGO gets notified → Can access dashboard
     │
     └──Rejected──→ Status: REJECTED → NGO notified with reason → Can reapply
@@ -216,7 +281,7 @@ Admin logs into web panel
     ▼
 Review pending NGO applications → View submitted documents
     │
-    ├──Approve──→ Backend calls NGORegistry.addVerifiedNGO(walletAddress)
+    ├──Approve──→ Backend calls PoolFactory.addVerifiedNGO(walletAddress)
     │              NGO status set to VERIFIED
     │
     └──Reject───→ Admin provides rejection reason → NGO notified
@@ -289,6 +354,8 @@ NGO views reimbursement status + updated trust score
 ---
 
 ## 7. Data Models
+
+Current implementation note: the active database schema is defined by SQL migrations in `backend/migrations`. Some fields below are legacy from the earlier timelock/mobile design, especially `timelockDuration`, `PendingRelease`, and release execution fields. Use migrations and `BACKEND_INSTRUCTIONS.md` as the implementation source of truth.
 
 ### User
 ```
@@ -398,16 +465,18 @@ createdAt: Timestamp
 
 ## 8. API Endpoints (Backend)
 
+Current implementation note: Clerk replaces `/api/auth/register` and `/api/auth/login`. File upload endpoints are planned but not implemented, so application/proof submissions currently send JSON URL fields. The exact current route list is documented in `BACKEND_INSTRUCTIONS.md` and `backend/main.go`.
+
 ### Auth
 | Method | Endpoint | Description |
 |---|---|---|
-| POST | `/api/auth/register` | Register new user (donor or NGO) |
-| POST | `/api/auth/login` | Login, returns JWT |
+| POST | `/api/webhooks/clerk` | Clerk user webhook, syncs local user and role metadata |
+| POST | `/api/dev/provision` | Development-only Clerk user provisioning fallback |
 
 ### NGO Verification
 | Method | Endpoint | Description |
 |---|---|---|
-| POST | `/api/ngo/apply` | Submit NGO application + documents (multipart) |
+| POST | `/api/ngo/apply` | Submit NGO application with document URL fields; upload support pending |
 | GET | `/api/ngo/application/status` | Get own application status + rejection reason |
 | GET | `/api/admin/ngo/applications` | List all NGO applications (admin only) |
 | GET | `/api/admin/ngo/applications/{id}` | View single application + documents (admin only) |
@@ -432,7 +501,7 @@ createdAt: Timestamp
 ### Proof Submissions
 | Method | Endpoint | Description |
 |---|---|---|
-| POST | `/api/proofs` | Submit proof (multipart: image + metadata) |
+| POST | `/api/proofs` | Submit proof JSON with receipt URL, OCR fields, amount, and GPS |
 | GET | `/api/proofs/my` | Get current NGO's submissions |
 | GET | `/api/proofs/pool/{poolId}` | Get all proofs for a pool |
 | GET | `/api/proofs/{id}` | Get proof detail + verification result |
@@ -448,6 +517,8 @@ createdAt: Timestamp
 ## 9. Smart Contract Interface
 
 > Full details in [SMART_CONTRACTS_PRD.md](./SMART_CONTRACTS_PRD.md). Summary below.
+
+Current implementation note: use `SMART_CONTRACTS_PRD.md` and `smartcontracts/src/*.sol` as the contract source of truth. The current contract design has no timelock, no pending-release struct, and no separate NGORegistry contract; `PoolFactory` owns NGO verification and `CrisisPool.releaseFunds` transfers immediately.
 
 ### PoolFactory.sol (NGO Registry + Pool Deployer)
 
@@ -624,9 +695,9 @@ Before storing a PendingRelease, contract enforces:
 | **Performance** | API responses < 500ms; blockchain tx confirmation depends on Polygon block time (~2s) |
 | **Reliability** | Retry mechanisms for failed uploads and blockchain transactions |
 | **Scalability** | Stateless backend APIs; horizontal scaling via containerization |
-| **Security** | JWT-based auth; input sanitization; wallet signature verification; HTTPS only |
+| **Security** | Clerk session auth; input sanitization; wallet signature verification; HTTPS only |
 | **Usability** | Simple workflows designed for non-technical field workers; minimal steps to submit proof |
-| **Storage** | Receipt images stored in cloud storage (S3/GCS) with signed URLs |
+| **Storage** | Planned: receipt images and NGO documents stored in cloud storage with signed URLs. Current repo still uses placeholder/document URL fields. |
 
 ---
 
@@ -634,16 +705,16 @@ Before storing a PendingRelease, contract enforces:
 
 | Layer | Technology |
 |---|---|
-| Android App | Kotlin, Jetpack Compose, MVVM + Clean Architecture |
-| On-device OCR | Google ML Kit Text Recognition |
-| Wallet Integration | Web3j for Android |
-| Backend | Spring Boot (Java/Kotlin) |
-| Database | PostgreSQL |
-| File Storage | AWS S3 or Google Cloud Storage |
+| Frontend | React 19, Vite 8, Tailwind CSS, React Query |
+| OCR | Planned backend/AI OCR extraction; current frontend accepts manual OCR fields |
+| Wallet Integration | Browser wallet via `window.ethereum`; nonce/signature backend flow exists partly through `connect-wallet` |
+| Backend | Go, Gin, pgx, Clerk SDK, go-ethereum |
+| Database | PostgreSQL migrations |
+| File Storage | Planned AWS S3/GCS or equivalent; not implemented yet |
 | Blockchain | Polygon PoS |
-| Smart Contracts | Solidity, Hardhat (dev tooling) |
+| Smart Contracts | Solidity, Foundry/Forge |
 | Stablecoin | USDC (Polygon) |
-| Auth | JWT (Spring Security) |
+| Auth | Clerk sessions + Clerk webhook provisioning |
 
 ---
 
@@ -684,3 +755,5 @@ Before storing a PendingRelease, contract enforces:
 *Changelog v1.1: Added admin role, NGO verification/onboarding flow, NGORegistry smart contract, NGOApplication data model, admin API endpoints. Crisis pools are admin-created. Community vote for NGO approval moved to post-MVP.*
 *Changelog v1.2: Finalized smart contract design. Added CrisisPoolFactory. CrisisPool redesigned with immutable caps, timelock release pattern, no pool closure function. Replaced trust score section with full 3-layer security model. Added PendingRelease data model.*
 *Changelog v1.3: Merged NGORegistry into PoolFactory (2 contracts instead of 3). Removed all string storage from on-chain contracts. Removed arrays. Removed proofId from PendingRelease struct (emitted in event only). Pool ID = contract address. Minimal on-chain footprint — only data needed for contract logic is stored.*
+
+*Changelog v2.0: Updated the active repository scope from the original Android/Spring Boot plan to the current React/Vite + Go/Gin + Clerk + Python FastAPI/LangGraph + Foundry implementation. Marked upload/OCR/donor donation flow as active MVP gaps.*

@@ -17,14 +17,8 @@ export default function CTASection() {
     <section id="donate" className="py-xl">
       <div className="max-w-container-max mx-auto px-gutter">
         <div className="bg-primary-container rounded-[40px] p-lg md:p-xl text-center relative overflow-hidden">
-          {/* Background image overlay */}
-          <div className="absolute inset-0 opacity-20">
-            <img
-              alt="Aid workers collaborating"
-              className="w-full h-full object-cover"
-              src="https://lh3.googleusercontent.com/aida-public/AB6AXuAkKDvQ2NZUmQsRJBndqSlYY6iKNMeC0-gmxi1trVzokVBi53hOzZkPaUf3zSn5yISqicoobqpVFH_zPetrJywOWGWKNL_EUBVwga_nHcsNiyd87bjeILVxpawfSvv_u1d82JyhPW3yjtrCRbq0kszj1Et-it7FDc-7j8-pPFCPZNZnm1nZgI1oszfLv0OwLMY0WEntz3dGAYZz7ZzPUVX7dZgvgyI7kM9yDgjshda_BI3-uXwf76CjoeL4awVXqNGJOX_xxxBLz3s"
-            />
-          </div>
+          {/* Background pattern overlay */}
+          <div className="absolute inset-0 opacity-10 bg-[radial-gradient(circle_at_30%_50%,rgba(255,255,255,0.4)_0%,transparent_50%),radial-gradient(circle_at_70%_80%,rgba(255,255,255,0.3)_0%,transparent_40%)]"></div>
           <h2 className="text-4xl md:text-5xl font-extrabold text-on-primary mb-md relative z-10 leading-tight">
             Ready to Join the Mission?
           </h2>

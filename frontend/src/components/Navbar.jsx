@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useAuth } from "../auth/AuthProvider";
+import WalletButton from "./WalletButton";
 
 export default function Navbar() {
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -45,6 +46,9 @@ export default function Navbar() {
 
         {/* Actions */}
         <div className="flex items-center gap-md">
+          <div className="hidden md:block">
+            <WalletButton variant="pill" />
+          </div>
           <a
             href="#/pools"
             className="px-md py-sm bg-secondary text-on-secondary rounded-full text-sm font-bold uppercase tracking-widest active:scale-95 transition-transform"
@@ -78,6 +82,7 @@ export default function Navbar() {
       {/* Mobile menu */}
       {mobileOpen && (
         <div className="md:hidden bg-surface border-t border-outline-variant px-gutter py-md space-y-md">
+          <WalletButton variant="pill" />
           <a href="#/pools" className="block text-primary font-bold" onClick={() => setMobileOpen(false)}>Projects</a>
           <a href="#transparency" className="block text-on-surface-variant" onClick={() => setMobileOpen(false)}>Transparency</a>
           <a href="#impact" className="block text-on-surface-variant" onClick={() => setMobileOpen(false)}>Impact</a>

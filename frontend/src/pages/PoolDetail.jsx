@@ -3,14 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { fetchPool } from "../api/pools";
 import { fetchPoolDonations } from "../api/donations";
 import { fetchPoolAssignmentRequests, pausePool, resumePool, approveAssignment, rejectAssignment } from "../api/admin";
-
-const ADMIN_NAV = [
-  { icon: "dashboard", label: "Dashboard", id: "admin-dash" },
-  { icon: "verified_user", label: "NGO Applications", id: "ngo-apps" },
-  { icon: "diversity_3", label: "Crisis Pools", id: "pools" },
-  { icon: "menu_book", label: "Impact Ledger", id: "ledger" },
-  { icon: "settings", label: "Settings", id: "settings" },
-];
+import AdminLayout from "../layouts/AdminLayout";
 
 function getPoolIdFromHash() {
   const m = window.location.hash.match(/#\/admin\/pool-detail\/(.+)/);
@@ -71,44 +64,20 @@ export default function PoolDetail() {
 
   if (!poolId) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="text-center">
+      <AdminLayout activeId="pools">
+        <div className="text-center py-16">
           <p className="text-on-surface-variant mb-4">No pool selected.</p>
           <a href="#/admin" className="text-primary font-bold hover:underline">← Back to Dashboard</a>
         </div>
-      </div>
+      </AdminLayout>
     );
   }
 
   const TABS = ["Assigned NGOs", `Pending Requests (${pendingReqs.length})`, "Donations", "Pool Settings"];
 
   return (
-    <div className="min-h-screen bg-background flex">
-      <aside className="fixed left-0 top-0 h-screen w-[200px] bg-surface-container-low flex flex-col z-50 border-r border-outline-variant">
-        <div className="px-5 pt-6 pb-4 flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full bg-primary-container flex items-center justify-center">
-            <span className="material-symbols-outlined text-on-primary text-xl">account_balance</span>
-          </div>
-          <div>
-            <div className="text-lg font-extrabold text-primary leading-tight">AidChain</div>
-            <div className="text-lg font-extrabold text-primary leading-tight">Admin</div>
-          </div>
-        </div>
-        <nav className="flex-1 px-3 space-y-1">
-          {ADMIN_NAV.map((item) => (
-            <a key={item.id} href={`#/admin/${item.id}`}
-              className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
-                item.id === "pools" ? "bg-primary text-on-primary" : "text-on-surface-variant hover:bg-surface-container-high"
-              }`}>
-              <span className="material-symbols-outlined text-xl">{item.icon}</span>
-              {item.label}
-            </a>
-          ))}
-        </nav>
-      </aside>
-
-      <main className="ml-[200px] flex-1 p-8 pb-16">
-        <div className="max-w-[1000px] mx-auto">
+    <AdminLayout activeId="pools">
+      <div className="max-w-[1000px] mx-auto">
           {isLoading ? (
             <div className="text-center py-16"><div className="w-8 h-8 border-4 border-primary/30 border-t-primary rounded-full animate-spin mx-auto"></div></div>
           ) : !pool ? (
@@ -285,7 +254,6 @@ export default function PoolDetail() {
             </>
           )}
         </div>
-      </main>
 
       {/* Reject Modal */}
       {rejectTarget && (
@@ -304,6 +272,6 @@ export default function PoolDetail() {
           </div>
         </div>
       )}
-    </div>
+    </AdminLayout>
   );
 }

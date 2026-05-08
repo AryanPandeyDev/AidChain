@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { ClerkProvider, useAuth as useClerkAuth, useUser, SignIn, SignUp } from "@clerk/clerk-react";
 
 const CLERK_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -46,40 +46,55 @@ function TokenSync({ children }) {
     return () => clearInterval(interval);
   }, [isSignedIn, getToken]);
 
+  const provisionedRef = useRef(false);
+
   useEffect(() => {
     if (!user) return;
+
     const meta = user.publicMetadata || {};
     const existingDbId = meta.db_user_id;
     const existingRole = meta.role;
 
-    if (existingDbId && existingRole) {
-      // Already provisioned — just set local state.
-      setRole(existingRole);
-      setDbUserId(existingDbId);
+    // If already provisioned this session, just use cached metadata.
+    if (provisionedRef.current) {
+      if (existingDbId && existingRole) {
+        setRole(existingRole);
+        setDbUserId(existingDbId);
+      }
       return;
     }
 
-    // Not provisioned yet — call the dev endpoint to sync this user.
     const provision = async () => {
       try {
-        const token = await getToken();
+        // For NEW users: send the role they picked during registration (stored in unsafeMetadata).
+        // For EXISTING users: send their current role back (no-op on the backend).
+        const requestedRole = !existingDbId ? (user.unsafeMetadata?.role || "DONOR") : (existingRole || "DONOR");
         const res = await fetch(
           `${import.meta.env.VITE_API_BASE_URL || "http://localhost:8080"}/api/dev/provision`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ clerk_user_id: user.id, role: user.unsafeMetadata?.role || "DONOR" }),
+            body: JSON.stringify({ clerk_user_id: user.id, role: requestedRole }),
           }
         );
         if (res.ok) {
           const data = await res.json();
+          provisionedRef.current = true;
           setRole(data.role);
           setDbUserId(data.db_user_id);
           // Reload the Clerk user so publicMetadata updates propagate.
-          await user.reload();
+          if (!existingDbId) await user.reload();
+        } else if (existingDbId && existingRole) {
+          provisionedRef.current = true;
+          setRole(existingRole);
+          setDbUserId(existingDbId);
         }
       } catch (err) {
         console.error("[AidChain] auto-provision failed:", err);
+        if (existingDbId && existingRole) {
+          setRole(existingRole);
+          setDbUserId(existingDbId);
+        }
       }
     };
     provision();

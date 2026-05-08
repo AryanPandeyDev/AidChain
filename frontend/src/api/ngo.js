@@ -63,3 +63,7 @@ export async function connectWallet(body) {
     body: JSON.stringify(body),
   });
 }
+
+export async function fetchWalletNonce() {
+  return apiFetch("/api/auth/wallet-nonce");
+}

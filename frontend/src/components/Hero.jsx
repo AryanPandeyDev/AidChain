@@ -1,4 +1,9 @@
+import { useAuth } from "../auth/AuthProvider";
+import { getDashboardHref } from "./RouteGuard";
+
 export default function Hero() {
+  const { isSignedIn, role } = useAuth();
+
   return (
     <section className="relative py-xl overflow-hidden">
       <div className="max-w-container-max mx-auto px-gutter grid grid-cols-1 lg:grid-cols-2 gap-lg items-center">
@@ -25,25 +30,64 @@ export default function Hero() {
             >
               Start Donating
             </a>
-            <a
-              href="#/ngo/apply"
-              className="px-8 py-4 border-2 border-primary text-primary rounded-full text-base font-bold active:scale-95 transition-transform hover:bg-primary hover:text-on-primary"
-            >
-              Become a Partner
-            </a>
+            {isSignedIn ? (
+              <a
+                href={getDashboardHref(role)}
+                className="px-8 py-4 border-2 border-primary text-primary rounded-full text-base font-bold active:scale-95 transition-transform hover:bg-primary hover:text-on-primary"
+              >
+                Go to Dashboard
+              </a>
+            ) : (
+              <a
+                href="#/register"
+                className="px-8 py-4 border-2 border-primary text-primary rounded-full text-base font-bold active:scale-95 transition-transform hover:bg-primary hover:text-on-primary"
+              >
+                Create Account
+              </a>
+            )}
           </div>
         </div>
 
-        {/* Right - Hero image */}
+        {/* Right - Abstract visual */}
         <div className="relative mt-8 lg:mt-0">
-          {/* Organic Background Shape */}
           <div className="absolute -top-10 -right-10 w-64 h-64 bg-secondary-container opacity-20 rounded-full blur-3xl"></div>
-          <div className="organic-mask overflow-hidden border-4 border-surface-container-high">
-            <img
-              className="w-full h-[480px] object-cover"
-              alt="Humanitarian workers engaging with local communities"
-              src="https://lh3.googleusercontent.com/aida-public/AB6AXuAM20L69Ul128x7icOKFVHlVcLOMVbzUOHh_GBoeiGKM-hbyOPboDnJPeLIJs3NP9GVuTyCfMyLIFLsj4tJ2fhzRYUDpb1zTx5-zWbLujXWP-C1zXtsnh5hBg4HfKtWkAlR2TuenwqwGxY-6KEaF8FqClfAxT6u6Z-e4eYUh9HSSPcmtR7YO_uShEhqI_-7SpTvF4aS_YoiX97TShRLAvCUQ6zC8kYW40PghtOCp6xplTbpnRf1p-sgi34f8eFWTuL4qsmsWjbgeFk"
-            />
+          <div className="rounded-3xl overflow-hidden border-4 border-surface-container-high bg-gradient-to-br from-primary-container via-primary-fixed/30 to-secondary-container p-12 flex flex-col items-center justify-center h-[420px]">
+            {/* Abstract blockchain visualization */}
+            <div className="relative">
+              <div className="w-28 h-28 rounded-full bg-primary/10 flex items-center justify-center mb-6">
+                <div className="w-20 h-20 rounded-full bg-primary/20 flex items-center justify-center">
+                  <span className="material-symbols-outlined text-5xl text-primary" style={{ fontVariationSettings: "'FILL' 1" }}>
+                    volunteer_activism
+                  </span>
+                </div>
+              </div>
+              {/* Floating nodes */}
+              <div className="absolute -top-2 -right-8 w-10 h-10 rounded-full bg-secondary/20 flex items-center justify-center">
+                <span className="material-symbols-outlined text-secondary text-lg">verified</span>
+              </div>
+              <div className="absolute -bottom-2 -left-10 w-10 h-10 rounded-full bg-primary-fixed flex items-center justify-center">
+                <span className="material-symbols-outlined text-primary text-lg">shield</span>
+              </div>
+            </div>
+            <div className="text-center mt-2">
+              <div className="text-2xl font-extrabold text-primary mb-1">Blockchain-Verified</div>
+              <div className="text-sm text-on-surface-variant">Every donation tracked on-chain</div>
+            </div>
+            {/* Stats row */}
+            <div className="flex gap-8 mt-6">
+              <div className="text-center">
+                <div className="text-xl font-extrabold text-secondary">100%</div>
+                <div className="text-[10px] text-on-surface-variant uppercase tracking-wider font-bold">Transparent</div>
+              </div>
+              <div className="text-center">
+                <div className="text-xl font-extrabold text-secondary">0%</div>
+                <div className="text-[10px] text-on-surface-variant uppercase tracking-wider font-bold">Hidden Fees</div>
+              </div>
+              <div className="text-center">
+                <div className="text-xl font-extrabold text-secondary">24/7</div>
+                <div className="text-[10px] text-on-surface-variant uppercase tracking-wider font-bold">Auditable</div>
+              </div>
+            </div>
           </div>
           {/* Verified badge overlay */}
           <div className="absolute -bottom-4 -left-4 bg-secondary-fixed p-md rounded-xl shadow-lg border-2 border-secondary transform -rotate-2">

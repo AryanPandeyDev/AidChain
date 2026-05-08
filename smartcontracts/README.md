@@ -1,66 +1,52 @@
-## Foundry
+# AidChain Smart Contracts
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+Foundry project for AidChain's on-chain pool and fund-release layer.
 
-Foundry consists of:
+## Contracts
 
-- **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
-- **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
-- **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
-- **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+| Contract | Purpose |
+|---|---|
+| `src/PoolFactory.sol` | Global admin/verifier/USDC configuration, NGO whitelist, and CrisisPool deployment |
+| `src/CrisisPool.sol` | Per-crisis USDC escrow, NGO assignment, donation pause/resume, immutable caps, immediate `releaseFunds` |
+| `src/mocks/MockUSDC.sol` | Local/test token for Anvil and testnet-style development |
+| `src/interfaces/IPoolFactory.sol` | Interface used by CrisisPool to check NGO verification |
 
-## Documentation
+## Tooling
 
-https://book.getfoundry.sh/
+- Solidity with Foundry/Forge
+- Tests in `test/*.t.sol`
+- Deployment and operation scripts in `script/*.s.sol`
 
-## Usage
+## Common Commands
 
-### Build
-
-```shell
-$ forge build
+```bash
+forge build
+forge test
+forge fmt
+anvil
 ```
 
-### Test
+## Local Flow
 
-```shell
-$ forge test
-```
+1. Deploy `MockUSDC`.
+2. Deploy `PoolFactory` with admin, verifier, and USDC addresses.
+3. Add a verified NGO through `PoolFactory.addVerifiedNGO`.
+4. Deploy a `CrisisPool` through the factory.
+5. Mint/approve USDC and donate to the pool.
+6. Assign NGO to the pool.
+7. Call `releaseFunds` from the verifier wallet after backend proof verification.
 
-### Format
+## Backend Integration
 
-```shell
-$ forge fmt
-```
+The Go backend uses go-ethereum wrappers in `backend/blockchain` to call:
 
-### Gas Snapshots
+- `PoolFactory.addVerifiedNGO`
+- `PoolFactory.deployPool`
+- `CrisisPool.assignNGO`
+- `CrisisPool.releaseFunds`
+- `CrisisPool.pauseDonations`
+- `CrisisPool.resumeDonations`
+- `CrisisPool.getPoolBalance`
+- `CrisisPool.donationsPaused`
 
-```shell
-$ forge snapshot
-```
-
-### Anvil
-
-```shell
-$ anvil
-```
-
-### Deploy
-
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
-
-### Cast
-
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+The backend event listener syncs donation, release, assignment, and pause/resume events into PostgreSQL.

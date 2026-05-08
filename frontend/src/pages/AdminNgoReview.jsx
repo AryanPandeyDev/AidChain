@@ -1,54 +1,10 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { fetchApplications, fetchApplication, approveApplication, rejectApplication } from "../api/admin";
-
-const ADMIN_NAV = [
-  { icon: "dashboard", label: "Dashboard", id: "admin-dash" },
-  { icon: "verified_user", label: "NGO Applications", id: "ngo-apps" },
-  { icon: "diversity_3", label: "Crisis Pools", id: "pools" },
-  { icon: "menu_book", label: "Impact Ledger", id: "ledger" },
-  { icon: "settings", label: "Settings", id: "settings" },
-];
+import AdminLayout from "../layouts/AdminLayout";
 
 const STATUS_TABS = ["PENDING_REVIEW", "VERIFIED", "REJECTED"];
 const TAB_LABELS = { PENDING_REVIEW: "Pending Review", VERIFIED: "Verified", REJECTED: "Rejected" };
-
-function AdminSidebar({ active }) {
-  return (
-    <aside className="fixed left-0 top-0 h-screen w-[200px] bg-surface-container-low flex flex-col z-50 border-r border-outline-variant">
-      <div className="px-5 pt-6 pb-4 flex items-center gap-3">
-        <div className="w-10 h-10 rounded-full bg-primary-container flex items-center justify-center">
-          <span className="material-symbols-outlined text-on-primary text-xl">shield</span>
-        </div>
-        <div>
-          <div className="text-lg font-extrabold text-primary leading-tight">AidChain</div>
-          <div className="text-lg font-extrabold text-primary leading-tight">Admin</div>
-          <div className="text-[10px] text-on-surface-variant">Verified Ledger</div>
-        </div>
-      </div>
-      <div className="px-3 mb-4">
-        <a href="#/admin/create-pool" className="flex items-center justify-center gap-2 py-2.5 bg-primary text-on-primary rounded-full font-bold text-sm active:scale-95 transition-transform">
-          <span className="material-symbols-outlined text-lg">add</span> New Crisis Pool
-        </a>
-      </div>
-      <nav className="flex-1 px-3 space-y-1">
-        {ADMIN_NAV.map((item) => (
-          <a key={item.id} href={`#/admin/${item.id}`}
-            className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
-              item.id === active ? "bg-primary text-on-primary" : "text-on-surface-variant hover:bg-surface-container-high"
-            }`}>
-            <span className="material-symbols-outlined text-xl">{item.icon}</span>
-            {item.label}
-          </a>
-        ))}
-      </nav>
-      <div className="px-3 pb-4 space-y-1 border-t border-outline-variant pt-3">
-        <a href="#" className="flex items-center gap-3 px-3 py-2 text-sm text-on-surface-variant"><span className="material-symbols-outlined text-xl">support_agent</span> Support</a>
-        <a href="#/" className="flex items-center gap-3 px-3 py-2 text-sm text-on-surface-variant"><span className="material-symbols-outlined text-xl">logout</span> Sign Out</a>
-      </div>
-    </aside>
-  );
-}
 
 function DetailView({ appId, onBack }) {
   const qc = useQueryClient();
@@ -72,20 +28,15 @@ function DetailView({ appId, onBack }) {
 
   if (isLoading || !app) {
     return (
-      <div className="min-h-screen bg-background flex">
-        <AdminSidebar active="ngo-apps" />
-        <main className="ml-[200px] flex-1 p-8">
-          <div className="text-center py-16"><div className="w-8 h-8 border-4 border-primary/30 border-t-primary rounded-full animate-spin mx-auto"></div></div>
-        </main>
-      </div>
+      <AdminLayout activeId="ngo-apps">
+        <div className="text-center py-16"><div className="w-8 h-8 border-4 border-primary/30 border-t-primary rounded-full animate-spin mx-auto"></div></div>
+      </AdminLayout>
     );
   }
 
   return (
-    <div className="min-h-screen bg-background flex">
-      <AdminSidebar active="ngo-apps" />
-      <main className="ml-[200px] flex-1 p-8 pb-28">
-        <div className="max-w-[800px] mx-auto">
+    <AdminLayout activeId="ngo-apps">
+      <div className="max-w-[800px] mx-auto">
           <button onClick={onBack} className="flex items-center gap-1 text-sm font-bold text-on-surface-variant hover:text-primary mb-4">
             <span className="material-symbols-outlined text-lg">arrow_back</span> Back to Applications
           </button>
@@ -199,8 +150,7 @@ function DetailView({ appId, onBack }) {
             </div>
           </div>
         )}
-      </main>
-    </div>
+    </AdminLayout>
   );
 }
 
@@ -217,11 +167,9 @@ export default function AdminNgoReview() {
   if (selectedId) return <DetailView appId={selectedId} onBack={() => setSelectedId(null)} />;
 
   return (
-    <div className="min-h-screen bg-background flex">
-      <AdminSidebar active="ngo-apps" />
-      <main className="ml-[200px] flex-1 p-8 pb-16">
-        <div className="max-w-[1000px] mx-auto">
-          <h1 className="text-4xl font-extrabold text-primary mb-6">NGO Applications</h1>
+    <AdminLayout activeId="ngo-apps">
+      <div className="max-w-[1000px] mx-auto">
+        <h1 className="text-4xl font-extrabold text-primary mb-6">NGO Applications</h1>
           <div className="flex gap-1 border-b border-outline-variant mb-6">
             {STATUS_TABS.map((t, i) => (
               <button key={t} onClick={() => setActiveTab(i)}
@@ -261,8 +209,7 @@ export default function AdminNgoReview() {
               </table>
             </div>
           )}
-        </div>
-      </main>
-    </div>
+      </div>
+    </AdminLayout>
   );
 }

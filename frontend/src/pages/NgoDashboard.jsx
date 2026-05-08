@@ -1,14 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchNgoDashboard } from "../api/ngo";
-import { useAuth } from "../auth/AuthProvider";
-
-const NGO_NAV = [
-  { icon: "dashboard", label: "Dashboard", id: "dashboard" },
-  { icon: "browse_activity", label: "Browse Pools", id: "pools" },
-  { icon: "receipt_long", label: "My Submissions", id: "submissions" },
-  { icon: "assignment", label: "Assignment Requests", id: "assignments" },
-  { icon: "verified", label: "Trust Score", id: "trust" },
-];
+import NgoLayout from "../layouts/NgoLayout";
 
 function StatusDot({ status }) {
   const colors = { VERIFIED: "bg-green-500", PENDING: "bg-secondary", REJECTED: "bg-error", FAILED: "bg-error" };
@@ -22,28 +14,11 @@ function StatusDot({ status }) {
   );
 }
 
-// Fallback data when backend is unreachable
-const FALLBACK = {
-  trust_score: 78,
-  assigned_pools: [
-    { id: "pool-1", name: "Sudan Emergency Relief", region: "East Africa", max_per_claim: 10000, status: "ACTIVE" },
-    { id: "pool-2", name: "Clean Water Initiative", region: "Sub-Saharan Africa", max_per_claim: 10000, status: "ACTIVE" },
-  ],
-  recent_proofs: [
-    { id: "p1", pool_id: "pool-1", claimed_amount: 2000, verification_status: "VERIFIED", created_at: "2023-10-24T00:00:00Z" },
-    { id: "p2", pool_id: "pool-2", claimed_amount: 1500, verification_status: "PENDING", created_at: "2023-10-23T00:00:00Z" },
-    { id: "p3", pool_id: "pool-1", claimed_amount: 5000, verification_status: "REJECTED", created_at: "2023-10-20T00:00:00Z" },
-  ],
-};
-
 export default function NgoDashboard() {
-  const { isSignedIn } = useAuth();
-
   const { data, isLoading, error } = useQuery({
     queryKey: ["ngoDashboard"],
     queryFn: fetchNgoDashboard,
     retry: 1,
-    placeholderData: FALLBACK,
   });
 
   const trustScore = data?.trust_score || 0;
@@ -52,50 +27,8 @@ export default function NgoDashboard() {
   const arcPct = (trustScore / 100) * 283;
 
   return (
-    <div className="min-h-screen bg-background flex">
-      {/* Sidebar */}
-      <aside className="fixed left-0 top-0 h-screen w-[200px] bg-primary-container flex flex-col z-50">
-        <div className="px-5 pt-6 pb-6">
-          <div className="text-2xl font-extrabold text-on-primary">AidChain</div>
-        </div>
-        <nav className="flex-1 px-3 space-y-1">
-          {NGO_NAV.map((item) => {
-            const isActive = item.id === "dashboard";
-            return (
-              <a key={item.id} href={item.id === "pools" ? "#/pools" : `#/ngo/${item.id}`}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
-                  isActive ? "bg-primary text-on-primary" : "text-on-primary-container hover:bg-primary/20"
-                }`}>
-                <span className="material-symbols-outlined text-xl">{item.icon}</span>
-                {item.label}
-              </a>
-            );
-          })}
-        </nav>
-        <div className="px-3 mb-4">
-          <a href="#" className="flex items-center justify-center gap-2 py-3 bg-secondary text-on-secondary rounded-full font-bold text-sm active:scale-95 transition-transform">
-            <span className="material-symbols-outlined text-lg">add</span>
-            New Proposal
-          </a>
-        </div>
-        <div className="px-4 pb-5 border-t border-on-primary-container/20 pt-3">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-surface-container-high flex items-center justify-center">
-              <span className="material-symbols-outlined text-primary text-xl">account_balance</span>
-            </div>
-            <div>
-              <div className="text-sm font-bold text-on-primary leading-tight">
-                {isSignedIn ? "My NGO" : "Global Relief Corp"}
-              </div>
-              <div className="text-xs text-on-primary-container">NGO · Verified ✓</div>
-            </div>
-          </div>
-        </div>
-      </aside>
-
-      {/* Main */}
-      <main className="ml-[200px] flex-1 p-8 pb-16">
-        <div className="max-w-[1000px] mx-auto">
+    <NgoLayout activeId="dashboard">
+      <div className="max-w-[1000px] mx-auto">
 
           {isLoading && (
             <div className="text-center py-16">
@@ -196,7 +129,7 @@ export default function NgoDashboard() {
                   {proofs.map((s) => (
                     <tr key={s.id} className="border-b border-outline-variant/50 last:border-0 hover:bg-surface-container-low/50 transition-colors">
                       <td className="px-5 py-4 text-sm text-on-surface">{new Date(s.created_at).toLocaleDateString()}</td>
-                      <td className="px-5 py-4 text-sm font-medium text-primary">{s.pool_id}</td>
+                      <td className="px-5 py-4 text-sm font-medium text-primary">{s.pool_name || s.pool_id}</td>
                       <td className="px-5 py-4 text-sm font-mono font-bold text-on-surface">${s.claimed_amount?.toLocaleString()}</td>
                       <td className="px-5 py-4"><StatusDot status={s.verification_status} /></td>
                     </tr>
@@ -219,8 +152,7 @@ export default function NgoDashboard() {
               Browse Pools
             </a>
           </div>
-        </div>
-      </main>
-    </div>
+      </div>
+    </NgoLayout>
   );
 }

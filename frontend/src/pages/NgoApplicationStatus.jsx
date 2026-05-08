@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchApplicationStatus } from "../api/ngo";
+import NgoLayout from "../layouts/NgoLayout";
 
 function buildTimeline(status) {
   const steps = [
@@ -96,14 +97,16 @@ export default function NgoApplicationStatus() {
   }
 
   return (
-    <div className="min-h-screen bg-background relative flex flex-col items-center justify-center p-6">
-      {/* Faded background */}
-      <div className="absolute inset-0 overflow-hidden opacity-[0.05] pointer-events-none">
-        <div className="w-full h-full bg-gradient-to-br from-primary-fixed to-secondary-fixed"></div>
-      </div>
+    <NgoLayout activeId="status">
+      <div className="max-w-[640px] mx-auto">
+        {/* Back arrow */}
+        <a href="#/ngo/dashboard" className="flex items-center gap-1 text-sm font-bold text-on-surface-variant hover:text-primary mb-6 transition-colors">
+          <span className="material-symbols-outlined text-lg">arrow_back</span>
+          Back to Dashboard
+        </a>
 
-      {/* Main Card */}
-      <div className="relative z-10 w-full max-w-[640px] bg-surface-container-lowest border border-outline-variant rounded-3xl p-10 shadow-lg shadow-primary/5 text-center mb-8">
+        {/* Main Card */}
+        <div className="bg-surface-container-lowest border border-outline-variant rounded-3xl p-10 shadow-lg shadow-primary/5 text-center mb-8">
         <div className="mx-auto w-16 h-16 bg-primary-fixed/40 rounded-2xl flex items-center justify-center mb-5">
           <span className="material-symbols-outlined text-primary text-3xl">{iconMap[status] || "info"}</span>
         </div>
@@ -186,11 +189,13 @@ export default function NgoApplicationStatus() {
               Reapply <span className="material-symbols-outlined text-lg">refresh</span>
             </a>
           )}
-          <a href="#" className="inline-flex items-center gap-1 text-sm font-bold text-on-surface-variant hover:text-primary transition-colors">
-            Need help? Contact support <span className="material-symbols-outlined text-lg">arrow_forward</span>
+          <a href="#/ngo/dashboard" className="inline-flex items-center gap-1 text-sm font-bold text-on-surface-variant hover:text-primary transition-colors">
+            <span className="material-symbols-outlined text-lg">arrow_back</span>
+            Back to Dashboard
           </a>
         </div>
       </div>
-    </div>
+      </div>
+    </NgoLayout>
   );
 }

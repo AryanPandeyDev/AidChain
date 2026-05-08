@@ -1,6 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { submitApplication } from "../api/ngo";
+import { shortenWalletAddress } from "../utils/wallet";
+import { useWallet } from "../wallet/useWallet";
+import NgoLayout from "../layouts/NgoLayout";
 
 const STEPS = [
     { num: 1, label: "Wallet" },
@@ -9,24 +12,8 @@ const STEPS = [
     { num: 4, label: "Review" },
 ];
 
-const COUNTRIES = [
-    "India", "Nigeria", "Kenya", "Bangladesh", "Pakistan", "Ethiopia",
-    "Tanzania", "Uganda", "Ghana", "South Africa", "Turkey", "Syria",
-    "Sudan", "Somalia", "Afghanistan", "Myanmar", "Colombia", "Haiti",
-];
-
-const NGO_NAV = [
-    { icon: "grid_view", label: "Impact Overview", id: "overview" },
-    { icon: "travel_explore", label: "Active Missions", id: "missions" },
-    { icon: "menu_book", label: "Aid Ledger", id: "ledger" },
-    { icon: "auto_awesome", label: "NGO Dashboard", id: "ngo-dashboard" },
-];
-
 export default function NgoApplication() {
     const [step, setStep] = useState(1);
-    const [walletAddress, setWalletAddress] = useState(null);
-    const [walletError, setWalletError] = useState("");
-    const [connecting, setConnecting] = useState(false);
     const [form, setForm] = useState({
         orgName: "",
         country: "",
@@ -44,28 +31,23 @@ export default function NgoApplication() {
         mutationFn: submitApplication,
         onSuccess: () => { window.location.hash = "#/ngo/status"; },
     });
+    const {
+        walletAddress,
+        isWalletVerified,
+        walletError,
+        isWalletBusy,
+        connectWallet,
+        verifyWallet,
+        clearWalletError,
+    } = useWallet();
 
-    const connectWallet = async () => {
-        setWalletError("");
-        if (!window.ethereum) {
-            setWalletError("MetaMask not detected. Please install MetaMask to continue.");
-            return;
+    useEffect(() => {
+        if (walletAddress && isWalletVerified && step === 1) {
+            setStep(2);
         }
-        setConnecting(true);
-        try {
-            const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
-            if (accounts[0]) {
-                setWalletAddress(accounts[0]);
-                setStep(2);
-            }
-        } catch (err) {
-            setWalletError(err.code === 4001 ? "Connection rejected. Please approve to continue." : err.message);
-        } finally {
-            setConnecting(false);
-        }
-    };
+    }, [walletAddress, isWalletVerified, step]);
 
-    const shortAddr = walletAddress ? `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}` : "";
+    const shortAddr = shortenWalletAddress(walletAddress);
 
     const handleSubmit = () => {
         // For dev: use placeholder URLs since we have no S3 yet.
@@ -96,56 +78,31 @@ export default function NgoApplication() {
         }
     };
 
+    const handleWalletConnect = async () => {
+        clearWalletError();
+        if (walletAddress && !isWalletVerified) {
+            await verifyWallet();
+            return;
+        }
+        await connectWallet();
+    };
+
+const COUNTRIES = [
+    "India", "Nigeria", "Kenya", "Bangladesh", "Pakistan", "Ethiopia",
+    "Tanzania", "Uganda", "Ghana", "South Africa", "Turkey", "Syria",
+    "Sudan", "Somalia", "Afghanistan", "Myanmar", "Colombia", "Haiti",
+];
+
     return (
-        <div className="min-h-screen bg-background flex">
-            {/* ── NGO Sidebar ── */}
-            <aside className="fixed left-0 top-0 h-screen w-[200px] bg-primary-container flex flex-col z-50">
-                <div className="px-5 pt-6 pb-2">
-                    <div className="w-10 h-10 bg-surface-container-high rounded-xl flex items-center justify-center mb-3">
-                        <span className="material-symbols-outlined text-primary text-lg">description</span>
-                    </div>
-                    <div className="text-xl font-extrabold text-on-primary">AidChain</div>
-                    <div className="text-xs text-on-primary-container mt-0.5">Verified NGO Partner</div>
-                </div>
-
-                <nav className="flex-1 px-3 mt-6 space-y-1">
-                    {NGO_NAV.map((item) => {
-                        const isActive = item.id === "ngo-dashboard";
-                        return (
-                            <a
-                                key={item.id}
-                                href={`#/ngo/${item.id}`}
-                                className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${isActive
-                                        ? "text-secondary font-bold"
-                                        : "text-on-primary-container hover:bg-primary/20"
-                                    }`}
-                            >
-                                <span className="material-symbols-outlined text-xl">{item.icon}</span>
-                                {item.label}
-                                {isActive && (
-                                    <span className="ml-auto w-1.5 h-6 bg-secondary rounded-full"></span>
-                                )}
-                            </a>
-                        );
-                    })}
-                </nav>
-
-                <div className="px-3 mb-6">
-                    <a
-                        href="#"
-                        className="flex items-center justify-center gap-2 py-3 px-4 bg-secondary text-on-secondary rounded-full font-bold text-sm active:scale-95 transition-transform"
-                    >
-                        <span className="material-symbols-outlined text-lg">add</span>
-                        New Initiative
-                    </a>
-                </div>
-            </aside>
-
-            {/* ── Main Content ── */}
-            <main className="ml-[200px] flex-1 p-8 pb-16">
-                <div className="max-w-[800px] mx-auto">
-                    {/* Header */}
-                    <div className="flex items-start justify-between mb-8">
+        <NgoLayout activeId="dashboard">
+            <div className="max-w-[800px] mx-auto">
+                {/* Back arrow */}
+                <a href="#/ngo/dashboard" className="flex items-center gap-1 text-sm font-bold text-on-surface-variant hover:text-primary mb-4 transition-colors">
+                    <span className="material-symbols-outlined text-lg">arrow_back</span>
+                    Back to Dashboard
+                </a>
+                {/* Header */}
+                <div className="flex items-start justify-between mb-8">
                         <div>
                             <h1 className="text-4xl font-extrabold text-primary tracking-tight">
                                 Apply for Verification
@@ -162,7 +119,7 @@ export default function NgoApplication() {
                                     </span>
                                     <div className="text-right">
                                         <div className="text-xs font-mono font-bold text-primary">{shortAddr}</div>
-                                        <div className="text-[10px] font-bold text-on-surface-variant">Connected</div>
+                                        <div className="text-[10px] font-bold text-on-surface-variant">{isWalletVerified ? "Connected" : "Needs Verification"}</div>
                                     </div>
                                 </>
                             ) : (
@@ -233,11 +190,11 @@ export default function NgoApplication() {
                                 )}
 
                                 <button
-                                    onClick={connectWallet}
-                                    disabled={connecting}
+                                    onClick={handleWalletConnect}
+                                    disabled={isWalletBusy}
                                     className="inline-flex items-center gap-3 px-8 py-3.5 bg-primary text-on-primary rounded-full text-base font-bold active:scale-95 transition-transform disabled:opacity-60"
                                 >
-                                    {connecting ? (
+                                    {isWalletBusy ? (
                                         <>
                                             <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
                                                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
@@ -248,7 +205,7 @@ export default function NgoApplication() {
                                     ) : (
                                         <>
                                             <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M21.3 3L12.7 9.5l1.6-3.8L21.3 3z" fill="#E2761B"/><path d="M2.7 3l8.5 6.6-1.5-3.9L2.7 3zm15.8 13.5l-2.3 3.5 4.9 1.3 1.4-4.8h-4zm-17 0l1.4 4.8 4.9-1.3-2.3-3.5H1.5z" fill="#E4761B"/></svg>
-                                            Connect MetaMask
+                                            {walletAddress && !isWalletVerified ? "Verify Wallet" : "Connect MetaMask"}
                                         </>
                                     )}
                                 </button>
@@ -363,7 +320,8 @@ export default function NgoApplication() {
                                 </button>
                                 <button
                                     onClick={() => setStep(3)}
-                                    className="flex items-center gap-2 px-8 py-2.5 bg-primary text-on-primary rounded-full text-sm font-bold active:scale-95 transition-transform"
+                                    disabled={!form.orgName || !form.country}
+                                    className="flex items-center gap-2 px-8 py-2.5 bg-primary text-on-primary rounded-full text-sm font-bold active:scale-95 transition-transform disabled:opacity-60"
                                 >
                                     Continue
                                     <span className="material-symbols-outlined text-lg">arrow_forward</span>
@@ -496,7 +454,7 @@ export default function NgoApplication() {
                                 </button>
                                 <button
                                     onClick={handleSubmit}
-                                    disabled={applyMutation.isPending}
+                                    disabled={applyMutation.isPending || !isWalletVerified}
                                     className="flex items-center gap-2 px-8 py-3 bg-primary text-on-primary rounded-full text-sm font-bold active:scale-95 transition-transform disabled:opacity-60"
                                 >
                                     {applyMutation.isPending ? "Submitting…" : "Submit Application"}
@@ -532,8 +490,7 @@ export default function NgoApplication() {
                             </div>
                         </div>
                     )}
-                </div>
-            </main>
-        </div>
+            </div>
+        </NgoLayout>
     );
 }

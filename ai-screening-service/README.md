@@ -48,11 +48,11 @@ LOG_LEVEL=INFO                # optional
 uvicorn app.main:app --host 0.0.0.0 --port 8090 --reload
 ```
 
-The Go backend calls `POST /screen` using `AI_SCREENING_SERVICE_URL`.
+The Go backend calls `POST /screen` using `AI_SCREENING_URL`.
 
 ```env
 # In Go backend .env
-AI_SCREENING_SERVICE_URL=http://localhost:8090
+AI_SCREENING_URL=http://localhost:8090
 ```
 
 ## API Contract

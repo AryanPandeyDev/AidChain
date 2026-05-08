@@ -2,7 +2,9 @@
 
 > Every action in the app, how frontend/backend/blockchain coordinate, and what data moves where.
 
-**Platform:** Web (React/Next.js) · **Backend:** Go · **Chain:** Polygon PoS · **Token:** USDC
+> Current implementation update: the active repo is React/Vite + Go/Gin + Clerk + PostgreSQL + Solidity/Foundry, with a Python FastAPI/LangGraph AI screening service. Older diagrams in this file may still mention custom JWT register/login, multipart uploads, and client-side OCR; those are not current implementation truth.
+
+**Platform:** Web (React/Vite) | **Backend:** Go/Gin | **Auth:** Clerk | **Chain:** Polygon PoS | **Token:** USDC
 
 ---
 
@@ -18,6 +20,15 @@
 ---
 
 ## 1. Authentication & Registration
+
+Current implementation:
+
+- Frontend signup/sign-in uses Clerk (`@clerk/clerk-react`), not `/api/auth/register` or `/api/auth/login`.
+- New users carry their selected role in Clerk unsafe metadata during signup.
+- Backend receives Clerk `user.created`/`user.updated` events at `POST /api/webhooks/clerk`, creates/updates local `users`, and writes `db_user_id` + `role` back to Clerk public metadata.
+- In local development, `POST /api/dev/provision` can provision a Clerk user without a webhook; it is only registered when Gin is not in release mode.
+- Authenticated API requests send the Clerk session token as `Authorization: Bearer <token>`.
+- Recommended next step: add `GET /api/me` so the frontend can reliably route users by local role/profile state.
 
 ### 1.1 Donor Registration
 
@@ -102,6 +113,13 @@
 
 ### 2.1 NGO Application Submission
 
+Current implementation gap:
+
+- The frontend currently collects files but converts them into development placeholder URLs before calling `POST /api/ngo/apply`.
+- The backend currently expects JSON document URL fields, not multipart file upload.
+- Real storage requires a new upload/presign flow before this section is fully true.
+- The frontend connects MetaMask locally, but does not yet call the backend `connect-wallet` signature flow during application submission.
+
 ```
 [Frontend]                          [Backend]                         [Storage]    [DB]
 ──────────────────────────────────────────────────────────────────────────────────────
@@ -130,6 +148,13 @@
 ```
 
 ### 2.2 AI Pre-Screening (Async)
+
+Current implementation:
+
+- The Python service exists under `ai-screening-service` and exposes `POST /screen`.
+- The Go backend calls it asynchronously from NGO application submission using `AI_SCREENING_URL`.
+- The AI service uses FastAPI, LangGraph, LangChain/OpenAI, HTTPX/BeautifulSoup, and pypdf.
+- Env naming should be standardized across docs and runtime to `AI_SCREENING_URL`.
 
 Before any application reaches the admin, an AI layer screens it. This runs as a background job triggered after submission.
 
@@ -415,6 +440,12 @@ NGOs submit requests to be assigned to pools (see Flow 5.5). Admin reviews them 
 
 ## 4. Donor Flows
 
+Current implementation gap:
+
+- Pool browsing and donor donation history are partially implemented.
+- Public `#/pool/:id` route is linked by the UI but not rendered in `App.jsx`.
+- The backend has donation read endpoints only. Donations are recorded from blockchain events; there is no backend `POST /api/donations` or transaction preparation endpoint.
+
 ### 4.1 Browse Crisis Pools
 
 ```
@@ -523,6 +554,11 @@ NGOs submit requests to be assigned to pools (see Flow 5.5). Admin reviews them 
 ---
 
 ## 5. NGO Flows (Post-Verification)
+
+Current implementation gap:
+
+- NGO dashboard reads assigned pools and recent proofs from `GET /api/ngo/dashboard`, but the frontend still has placeholder dashboard data configured.
+- Proof submission currently asks for a receipt URL and manual OCR fields. Real receipt upload and OCR extraction are not implemented.
 
 ### 5.1 NGO Dashboard
 

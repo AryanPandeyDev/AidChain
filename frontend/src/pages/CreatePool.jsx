@@ -1,14 +1,7 @@
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { createPool } from "../api/admin";
-
-const ADMIN_NAV = [
-  { icon: "dashboard", label: "Dashboard", id: "admin-dash" },
-  { icon: "verified_user", label: "NGO Applications", id: "ngo-apps" },
-  { icon: "diversity_3", label: "Crisis Pools", id: "pools" },
-  { icon: "menu_book", label: "Impact Ledger", id: "ledger" },
-  { icon: "settings", label: "Settings", id: "settings" },
-];
+import AdminLayout from "../layouts/AdminLayout";
 
 export default function CreatePool() {
   const [form, setForm] = useState({
@@ -18,6 +11,7 @@ export default function CreatePool() {
     max_per_claim: "5000", max_per_ngo_per_day: "25000",
     max_per_ngo_pool: "100000",
   });
+  const [success, setSuccess] = useState(null);
 
   const u = (field) => (e) => setForm((f) => ({ ...f, [field]: e.target.value }));
 
@@ -39,54 +33,39 @@ export default function CreatePool() {
       max_per_ngo_pool: parseFloat(form.max_per_ngo_pool) || 0,
     }),
     onSuccess: (data) => {
-      alert(`Pool created! ID: ${data.pool_id}\nContract: ${data.contract_address}`);
-      window.location.hash = "#/admin";
+      setSuccess(data);
     },
-    onError: (err) => alert("Deploy failed: " + err.message),
   });
 
   return (
-    <div className="min-h-screen bg-background flex">
-      <aside className="fixed left-0 top-0 h-screen w-[200px] bg-surface-container-low flex flex-col z-50 border-r border-outline-variant">
-        <div className="px-5 pt-6 pb-4 flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full bg-primary-container flex items-center justify-center">
-            <span className="material-symbols-outlined text-on-primary text-xl">account_balance</span>
-          </div>
-          <div>
-            <div className="text-lg font-extrabold text-primary leading-tight">AidChain</div>
-            <div className="text-lg font-extrabold text-primary leading-tight">Admin</div>
-            <div className="text-[10px] text-on-surface-variant">Verified Ledger</div>
-          </div>
-        </div>
-        <div className="px-3 mb-4">
-          <a href="#/admin/create-pool" className="flex items-center justify-center gap-2 py-2.5 bg-primary text-on-primary rounded-full font-bold text-sm">
-            <span className="material-symbols-outlined text-lg">add</span> New Crisis Pool
-          </a>
-        </div>
-        <nav className="flex-1 px-3 space-y-1">
-          {ADMIN_NAV.map((item) => (
-            <a key={item.id} href={`#/admin/${item.id}`}
-              className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
-                item.id === "pools" ? "bg-primary text-on-primary" : "text-on-surface-variant hover:bg-surface-container-high"
-              }`}>
-              <span className="material-symbols-outlined text-xl">{item.icon}</span>
-              {item.label}
-            </a>
-          ))}
-        </nav>
-        <div className="px-3 pb-4 space-y-1 border-t border-outline-variant pt-3">
-          <a href="#" className="flex items-center gap-3 px-3 py-2 text-sm text-on-surface-variant"><span className="material-symbols-outlined text-xl">support_agent</span> Support</a>
-          <a href="#/" className="flex items-center gap-3 px-3 py-2 text-sm text-on-surface-variant"><span className="material-symbols-outlined text-xl">logout</span> Sign Out</a>
-        </div>
-      </aside>
-
-      <main className="ml-[200px] flex-1 p-8 pb-16">
-        <div className="max-w-[700px] mx-auto">
+    <AdminLayout activeId="pools">
+      <div className="max-w-[700px] mx-auto">
           <a href="#/admin" className="flex items-center gap-1 text-sm font-bold text-on-surface-variant hover:text-primary mb-3">
             <span className="material-symbols-outlined text-lg">arrow_back</span> Back to Pools
           </a>
           <h1 className="text-3xl font-extrabold text-primary tracking-tight mb-1">Create Crisis Pool</h1>
           <p className="text-sm text-on-surface-variant mb-8">Deploy a new crisis pool smart contract with immutable fund protection caps.</p>
+
+          {/* Success state */}
+          {success ? (
+            <div className="bg-surface-container-lowest border border-outline-variant rounded-2xl p-8 text-center">
+              <div className="mx-auto w-16 h-16 bg-primary-fixed/40 rounded-2xl flex items-center justify-center mb-5">
+                <span className="material-symbols-outlined text-primary text-3xl" style={{ fontVariationSettings: "'FILL' 1" }}>rocket_launch</span>
+              </div>
+              <h2 className="text-2xl font-extrabold text-primary mb-2">Pool Deployed!</h2>
+              <div className="space-y-2 mb-6">
+                <div className="text-sm text-on-surface-variant">Pool ID: <span className="font-mono font-bold text-primary">{success.pool_id}</span></div>
+                {success.contract_address && (
+                  <div className="text-sm text-on-surface-variant">Contract: <span className="font-mono font-bold text-primary">{success.contract_address}</span></div>
+                )}
+              </div>
+              <a href="#/admin" className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-full text-sm font-bold active:scale-95 transition-transform">
+                <span className="material-symbols-outlined text-lg">arrow_back</span>
+                Back to Dashboard
+              </a>
+            </div>
+          ) : (
+          <>
 
           {mutation.error && (
             <div className="bg-error-container border border-error rounded-xl p-4 mb-6">
@@ -188,8 +167,9 @@ export default function CreatePool() {
               </button>
             </div>
           </div>
-        </div>
-      </main>
-    </div>
+          </>
+          )}
+      </div>
+    </AdminLayout>
   );
 }

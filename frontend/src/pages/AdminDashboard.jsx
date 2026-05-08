@@ -1,14 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchApplications } from "../api/admin";
 import { fetchPools } from "../api/pools";
-
-const ADMIN_NAV = [
-  { icon: "dashboard", label: "Dashboard", id: "admin-dash" },
-  { icon: "verified_user", label: "NGO Applications", id: "ngo-apps" },
-  { icon: "diversity_3", label: "Crisis Pools", id: "pools" },
-  { icon: "menu_book", label: "Impact Ledger", id: "ledger" },
-  { icon: "settings", label: "Settings", id: "settings" },
-];
+import AdminLayout from "../layouts/AdminLayout";
 
 export default function AdminDashboard() {
   const { data: pendingApps = [], isLoading: appsLoading } = useQuery({
@@ -32,36 +25,8 @@ export default function AdminDashboard() {
   const activePools = pools.filter((p) => p.status === "ACTIVE");
 
   return (
-    <div className="min-h-screen bg-background flex">
-      <aside className="fixed left-0 top-0 h-screen w-[200px] bg-primary-container flex flex-col z-50">
-        <div className="px-5 pt-6 pb-2">
-          <div className="text-xl font-extrabold text-on-primary">AidChain</div>
-          <div className="text-xs text-on-primary-container mt-0.5">Admin Panel</div>
-        </div>
-        <nav className="flex-1 px-3 mt-6 space-y-1">
-          {ADMIN_NAV.map((item) => (
-            <a key={item.id} href={`#/admin/${item.id}`}
-              className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
-                item.id === "admin-dash" ? "bg-primary text-on-primary shadow-sm" : "text-on-primary-container hover:bg-primary/20"
-              }`}>
-              <span className="material-symbols-outlined text-xl">{item.icon}</span>
-              {item.label}
-            </a>
-          ))}
-        </nav>
-        <div className="px-3 pb-5 border-t border-on-primary-container/20 pt-3">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-full bg-secondary-container flex items-center justify-center text-on-secondary-container font-bold text-sm">AD</div>
-            <div>
-              <div className="text-sm font-bold text-on-primary">Admin</div>
-              <div className="text-xs text-on-primary-container">Platform</div>
-            </div>
-          </div>
-        </div>
-      </aside>
-
-      <main className="ml-[200px] flex-1 p-8 pb-16">
-        <div className="max-w-[1100px] mx-auto">
+    <AdminLayout activeId="admin-dash">
+      <div className="max-w-[1100px] mx-auto">
           <h1 className="text-4xl font-extrabold text-primary tracking-tight mb-8">Admin Dashboard</h1>
 
           {/* Stats */}
@@ -202,8 +167,7 @@ export default function AdminDashboard() {
               </div>
             )}
           </div>
-        </div>
-      </main>
-    </div>
+      </div>
+    </AdminLayout>
   );
 }

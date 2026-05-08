@@ -6,6 +6,7 @@ const STEPS = ["Select Pool", "Upload Receipt", "Verify Data", "Submit"];
 
 export default function ProofSubmission() {
   const [step, setStep] = useState(0);
+  const [submitted, setSubmitted] = useState(false);
   const [form, setForm] = useState({
     pool_id: "", receipt_image_url: "", claimed_amount: "",
     ocr_amount: "", ocr_vendor: "", ocr_date: "",
@@ -46,8 +47,7 @@ export default function ProofSubmission() {
       longitude: parseFloat(form.longitude) || 0,
     }),
     onSuccess: () => {
-      alert("Proof submitted successfully! Verification in progress.");
-      window.location.hash = "#/ngo/dashboard";
+      setSubmitted(true);
     },
   });
 
@@ -79,6 +79,23 @@ export default function ProofSubmission() {
       </div>
 
       <div className="max-w-[700px] mx-auto px-8 py-8">
+        {/* Success state */}
+        {submitted ? (
+          <div className="bg-surface-container-lowest border border-outline-variant rounded-2xl p-8 text-center">
+            <div className="mx-auto w-16 h-16 bg-primary-fixed/40 rounded-2xl flex items-center justify-center mb-5">
+              <span className="material-symbols-outlined text-primary text-3xl" style={{ fontVariationSettings: "'FILL' 1" }}>check_circle</span>
+            </div>
+            <h2 className="text-2xl font-extrabold text-primary mb-2">Proof Submitted!</h2>
+            <p className="text-on-surface-variant text-sm mb-6 max-w-md mx-auto">
+              Your proof is now undergoing three-signal verification (OCR match, GPS proximity, historical performance). Funds will be released automatically upon passing.
+            </p>
+            <a href="#/ngo/dashboard" className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-full text-sm font-bold active:scale-95 transition-transform">
+              <span className="material-symbols-outlined text-lg">arrow_back</span>
+              Back to Dashboard
+            </a>
+          </div>
+        ) : (
+        <>
         {mutation.error && (
           <div className="bg-error-container border border-error rounded-xl p-4 mb-6">
             <p className="text-sm text-on-error-container">{mutation.error.message}</p>
@@ -115,7 +132,7 @@ export default function ProofSubmission() {
         {step === 1 && (
           <div className="bg-surface-container-lowest border border-outline-variant rounded-2xl p-6">
             <h2 className="text-xl font-bold text-primary mb-4">Upload Receipt</h2>
-            <p className="text-sm text-on-surface-variant mb-4">Enter the URL of your uploaded receipt image. AI OCR will extract data automatically.</p>
+            <p className="text-sm text-on-surface-variant mb-4">Enter the URL of your uploaded receipt image and the amount you're claiming.</p>
             <div className="mb-4">
               <label className="block text-sm font-bold text-on-surface mb-1.5">Receipt Image URL</label>
               <input type="url" placeholder="https://storage.example.com/receipts/receipt-001.jpg" value={form.receipt_image_url} onChange={u("receipt_image_url")}
@@ -231,6 +248,8 @@ export default function ProofSubmission() {
             </button>
           )}
         </div>
+        </>
+        )}
       </div>
     </div>
   );

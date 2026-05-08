@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -18,10 +19,10 @@ import (
 // so all downstream handlers work without any changes.
 //
 // The flow:
-//   1. Extract Bearer token from Authorization header
-//   2. Verify JWT via Clerk SDK (uses JWKS auto-fetch/cache)
-//   3. Read the Clerk user's public metadata to get our DB user_id and role
-//   4. Set "userID" and "role" in gin.Context — same keys the old JWT() used
+//  1. Extract Bearer token from Authorization header
+//  2. Verify JWT via Clerk SDK (uses JWKS auto-fetch/cache)
+//  3. Read the Clerk user's public metadata to get our DB user_id and role
+//  4. Set "userID" and "role" in gin.Context — same keys the old JWT() used
 func ClerkAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		header := c.GetHeader("Authorization")
@@ -81,6 +82,56 @@ func Role(required string) gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "insufficient permissions"})
 			return
 		}
+		c.Next()
+	}
+}
+
+// AdminPasswordAuth requires BOTH a valid Clerk session (to resolve the real
+// DB user ID) AND the shared admin password via X-Admin-Password header.
+// This ensures handlers always see a real UUID in "userID".
+func AdminPasswordAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// ── 1. Check admin password ──────────────────────────────────
+		password := os.Getenv("ADMIN_ACCESS_PASSWORD")
+		if password == "" {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "admin access password not configured"})
+			return
+		}
+
+		provided := c.GetHeader("X-Admin-Password")
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(password)) != 1 {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid admin password"})
+			return
+		}
+
+		// ── 2. Resolve Clerk session (if present) to get real user ID ──
+		header := c.GetHeader("Authorization")
+		if strings.HasPrefix(header, "Bearer ") {
+			sessionToken := strings.TrimPrefix(header, "Bearer ")
+			claims, err := clerkjwt.Verify(c.Request.Context(), &clerkjwt.VerifyParams{
+				Token: sessionToken,
+			})
+			if err == nil {
+				clerkUser, err := user.Get(c.Request.Context(), claims.Subject)
+				if err == nil {
+					var meta map[string]any
+					if e := json.Unmarshal(clerkUser.PublicMetadata, &meta); e == nil {
+						if dbID, ok := meta["db_user_id"].(string); ok && dbID != "" {
+							c.Set("userID", dbID)
+							c.Set("role", "ADMIN")
+							c.Set("clerkUserID", claims.Subject)
+							c.Next()
+							return
+						}
+					}
+				}
+			}
+		}
+
+		// Fallback: password was valid but no Clerk session — set a nil-safe sentinel.
+		// Handlers that INSERT with created_by should handle this gracefully.
+		c.Set("userID", nil)
+		c.Set("role", "ADMIN")
 		c.Next()
 	}
 }

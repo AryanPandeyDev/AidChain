@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -31,6 +32,63 @@ type AuthHandler struct{ db *pgxpool.Pool }
 // NewAuthHandler returns an AuthHandler backed by the given connection pool.
 func NewAuthHandler(db *pgxpool.Pool) *AuthHandler { return &AuthHandler{db: db} }
 
+// Me returns the authenticated user's profile from the database.
+// This is the frontend's source of truth for role, wallet, trust score, etc.
+func (h *AuthHandler) Me(c *gin.Context) {
+	userID := c.GetString("userID")
+
+	var (
+		id            string
+		email         string
+		name          string
+		role          string
+		walletAddress *string
+		trustScore    float64
+		flagged       bool
+	)
+	err := h.db.QueryRow(context.Background(),
+		`SELECT id, email, name, role, wallet_address, trust_score, flagged FROM users WHERE id = $1`,
+		userID,
+	).Scan(&id, &email, &name, &role, &walletAddress, &trustScore, &flagged)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"id":             id,
+		"email":          email,
+		"name":           name,
+		"role":           role,
+		"wallet_address": walletAddress,
+		"trust_score":    trustScore,
+		"flagged":        flagged,
+	})
+}
+
+// WalletNonce returns a short-lived, server-signed nonce for wallet ownership proof.
+func (h *AuthHandler) WalletNonce(c *gin.Context) {
+	userID := c.GetString("userID")
+
+	nonceBytes := make([]byte, 16)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "nonce generation failed"})
+		return
+	}
+
+	expiresAt := time.Now().Add(5 * time.Minute).Unix()
+	randomPart := hex.EncodeToString(nonceBytes)
+	payload := fmt.Sprintf("%s.%d.%s", userID, expiresAt, randomPart)
+	sig := signWalletNonce(payload)
+	nonce := base64.RawURLEncoding.EncodeToString([]byte(payload + "." + sig))
+
+	c.JSON(http.StatusOK, gin.H{
+		"nonce":     nonce,
+		"message":   fmt.Sprintf("AidChain Wallet Verification\nNonce: %s", nonce),
+		"expiresAt": expiresAt,
+	})
+}
+
 // ConnectWallet verifies an EIP-191 wallet ownership signature and saves the wallet address to the user record.
 func (h *AuthHandler) ConnectWallet(c *gin.Context) {
 	userID := c.GetString("userID")
@@ -41,6 +99,11 @@ func (h *AuthHandler) ConnectWallet(c *gin.Context) {
 		Nonce         string `json:"nonce"          binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := verifyWalletNonce(userID, body.Nonce); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -84,6 +147,51 @@ func (h *AuthHandler) ConnectWallet(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "wallet connected", "wallet_address": body.WalletAddress})
+}
+
+func signWalletNonce(payload string) string {
+	mac := hmac.New(sha256.New, []byte(walletNonceSecret()))
+	mac.Write([]byte(payload))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func verifyWalletNonce(userID, nonce string) error {
+	raw, err := base64.RawURLEncoding.DecodeString(nonce)
+	if err != nil {
+		return fmt.Errorf("invalid wallet nonce")
+	}
+
+	parts := strings.Split(string(raw), ".")
+	if len(parts) != 4 {
+		return fmt.Errorf("invalid wallet nonce")
+	}
+	if parts[0] != userID {
+		return fmt.Errorf("wallet nonce does not belong to current user")
+	}
+
+	var expiresAt int64
+	if _, err := fmt.Sscanf(parts[1], "%d", &expiresAt); err != nil {
+		return fmt.Errorf("invalid wallet nonce expiry")
+	}
+	if time.Now().Unix() > expiresAt {
+		return fmt.Errorf("wallet nonce expired")
+	}
+
+	payload := strings.Join(parts[:3], ".")
+	if !hmac.Equal([]byte(parts[3]), []byte(signWalletNonce(payload))) {
+		return fmt.Errorf("invalid wallet nonce signature")
+	}
+
+	return nil
+}
+
+func walletNonceSecret() string {
+	for _, key := range []string{"JWT_SECRET", "INTERNAL_SECRET", "CLERK_WEBHOOK_SECRET"} {
+		if v := os.Getenv(key); v != "" {
+			return v
+		}
+	}
+	return "aidchain-dev-wallet-nonce-secret"
 }
 
 // ─── Clerk Webhook ──────────────────────────────────────────────────────────
@@ -287,10 +395,14 @@ func (h *AuthHandler) DevProvision(c *gin.Context) {
 		return
 	}
 
-	// Default to DONOR if not specified.
+	// Only DONOR and NGO can self-assign. ADMIN must be set manually via
+	// the CLI: go run ./cmd/makeadmin <email>
 	role := body.Role
 	switch role {
-	case "DONOR", "NGO", "ADMIN":
+	case "DONOR", "NGO":
+	case "ADMIN":
+		c.JSON(http.StatusForbidden, gin.H{"error": "admin role cannot be self-assigned"})
+		return
 	default:
 		role = "DONOR"
 	}
@@ -323,22 +435,31 @@ func (h *AuthHandler) DevProvision(c *gin.Context) {
 	}
 
 	// Upsert in DB.
-	var dbUserID string
+	// On conflict: always update email/name, and upgrade role DONOR→NGO if requested.
+	// Never overwrite ADMIN (admins are set via CLI only).
+	var dbUserID, actualRole string
 	err = h.db.QueryRow(context.Background(),
 		`INSERT INTO users (clerk_id, email, name, role)
 		 VALUES ($1, $2, $3, $4)
-		 ON CONFLICT (clerk_id) DO UPDATE SET email=EXCLUDED.email, name=EXCLUDED.name, role=$4
-		 RETURNING id`,
+		 ON CONFLICT (clerk_id) DO UPDATE
+		   SET email = EXCLUDED.email,
+		       name  = EXCLUDED.name,
+		       role  = CASE
+		                 WHEN users.role = 'ADMIN' THEN users.role
+		                 WHEN users.role = 'NGO'   THEN users.role
+		                 ELSE EXCLUDED.role
+		               END
+		 RETURNING id, role`,
 		body.ClerkUserID, email, name, role,
-	).Scan(&dbUserID)
+	).Scan(&dbUserID, &actualRole)
 	if err != nil {
 		log.Printf("[dev-provision] upsert failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db upsert failed: " + err.Error()})
 		return
 	}
 
-	// Write db_user_id + role back to Clerk public metadata.
-	meta := map[string]any{"db_user_id": dbUserID, "role": role}
+	// Write db_user_id + actual role back to Clerk public metadata.
+	meta := map[string]any{"db_user_id": dbUserID, "role": actualRole}
 	metaJSON, _ := json.Marshal(meta)
 	if _, err = user.Update(c.Request.Context(), body.ClerkUserID, &user.UpdateParams{
 		PublicMetadata: clerk.JSONRawMessage(metaJSON),
@@ -347,6 +468,6 @@ func (h *AuthHandler) DevProvision(c *gin.Context) {
 		// Non-fatal — DB is updated; metadata can be retried.
 	}
 
-	log.Printf("[dev-provision] provisioned %s → db_user_id=%s role=%s", body.ClerkUserID, dbUserID, role)
-	c.JSON(http.StatusOK, gin.H{"status": "provisioned", "db_user_id": dbUserID, "role": role, "email": email})
+	log.Printf("[dev-provision] provisioned %s → db_user_id=%s role=%s", body.ClerkUserID, dbUserID, actualRole)
+	c.JSON(http.StatusOK, gin.H{"status": "provisioned", "db_user_id": dbUserID, "role": actualRole, "email": email})
 }

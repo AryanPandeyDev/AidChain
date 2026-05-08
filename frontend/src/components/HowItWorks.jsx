@@ -70,13 +70,15 @@ export default function HowItWorks() {
               </div>
             </div>
 
-            {/* Ledger image */}
-            <div className="p-md">
-              <img
-                className="w-full h-48 object-cover rounded-xl"
-                alt="Blockchain ledger on tablet in a community clinic"
-                src="https://lh3.googleusercontent.com/aida-public/AB6AXuD2m0oCdBCjKRJAW8Xmvla2kQlHeClnK4EUQFZSrS3Q5ZcYNhYLJcICHReO7NdkkcpClREtmD0Mq0JEdrXlvN3ZI0osW7sW-5Ko8CtoUS_hFNPulTYhxfOXZ7rEvQQPMTBnqMsrz3CRTvvrjhZ4W8aqJDbQ5s4xlMuVw1x7MdJiR6M0HrZTXpWp4Cf81P9S3cTSbTKdmCwe7oGLbR27IHafskzhTgpWqlAnbYSjMdBjc4gQUovJ2ST0O19_svmeEWrqbB4SoSZRVkc"
-              />
+            {/* Ledger footer */}
+            <div className="px-md pb-md">
+              <div className="bg-gradient-to-r from-primary-fixed/30 to-secondary-fixed/30 rounded-xl px-4 py-3 flex items-center gap-3">
+                <span className="material-symbols-outlined text-primary text-xl" style={{ fontVariationSettings: "'FILL' 1" }}>verified</span>
+                <div>
+                  <div className="text-xs font-bold text-primary">All transactions immutable</div>
+                  <div className="text-[10px] text-on-surface-variant">Polygon PoS — avg. confirmation 2.1s</div>
+                </div>
+              </div>
             </div>
           </div>
         </div>

@@ -49,6 +49,8 @@ func (h *PoolHandler) ListPools(c *gin.Context) {
 		Status          string    `json:"status"`
 		DonationsPaused bool      `json:"donations_paused"`
 		CreatedAt       time.Time `json:"created_at"`
+		DonatedAmount   *float64  `json:"donated_amount,omitempty"`
+		PoolBalance     *float64  `json:"pool_balance,omitempty"`
 	}
 	var pools []Pool
 	for rows.Next() {
@@ -60,6 +62,24 @@ func (h *PoolHandler) ListPools(c *gin.Context) {
 			continue
 		}
 		pools = append(pools, p)
+	}
+
+	// Enrich with on-chain data when blockchain is available.
+	if h.bc != nil {
+		for i := range pools {
+			if pools[i].ContractAddress == "" {
+				continue
+			}
+			poolAddr := common.HexToAddress(pools[i].ContractAddress)
+			if donated, err := h.bc.GetTotalDonated(context.Background(), poolAddr); err == nil {
+				d := blockchain.USDCToHuman(donated)
+				pools[i].DonatedAmount = &d
+			}
+			if balance, err := h.bc.GetPoolBalance(context.Background(), poolAddr); err == nil {
+				b := blockchain.USDCToHuman(balance)
+				pools[i].PoolBalance = &b
+			}
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"pools": pools, "count": len(pools)})
 }
@@ -94,6 +114,7 @@ func (h *PoolHandler) GetPool(c *gin.Context) {
 		Status           string     `json:"status"`
 		CreatedAt        time.Time  `json:"created_at"`
 		PoolBalance      *float64   `json:"pool_balance,omitempty"`
+		DonatedAmount    *float64   `json:"donated_amount,omitempty"`
 		NGOs             []ngoScore `json:"ngos"`
 	}
 	if err := row.Scan(
@@ -116,6 +137,12 @@ func (h *PoolHandler) GetPool(c *gin.Context) {
 		if balance, err := h.bc.GetPoolBalance(context.Background(), poolAddr); err == nil {
 			bal := blockchain.USDCToHuman(balance)
 			p.PoolBalance = &bal
+		}
+
+		// Live totalDonated from the contract.
+		if donated, err := h.bc.GetTotalDonated(context.Background(), poolAddr); err == nil {
+			d := blockchain.USDCToHuman(donated)
+			p.DonatedAmount = &d
 		}
 
 		// Live donationsPaused state from the contract.
